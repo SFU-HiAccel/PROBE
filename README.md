@@ -202,138 +202,18 @@ labels returned by the expert MLLM during sampling and rollback.
 - **OS & Software:** Linux (tested on Ubuntu). **Python:** 3.10–3.12. **Java:** 8 or 11 (for PySpark 3.3).  CUDA 12.4 toolkit, vLLM 0.20.0, and transformers 4.57.0
 - **GPU** Two NVIDIA RTX PRO 6000 Blackwell Max-Q GPUs
 - **CPU** Intel Xeon w7-3445 with 20 cores, with 125 GB of RAM. 
-
 - An **OpenAI-compatible LLM endpoint** (any server works; we use vLLM). Default endpoint
   `http://localhost:8000/v1`.
 
 ### R2. Installation *(ARI §A: Source code & packages)*
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
+# Use this to create the deploy conda env
+bash /localhome/hza214/LASO/create_deploy_env.sh
 
-`requirements.txt` is tiered: the **core** block (numpy/scipy/scikit-learn/pandas/pytest)
-is enough for the smoke test; the **experiments** block (pyspark/torch/transformers/
-openai/…) is needed for the full reproduction.
+# get into the deploy conda env
+conda activate deoloy
 
-### R3. Smoke test (no GPU, no LLM, no data) *(ARI §D: install-verification)*
-
-```bash
-pytest tests/ -q          # expected: all tests pass
-```
-
-This exercises the active-learning sampler, Correct & Smooth label propagation, the
-calibration stage, and the learned router on **synthetic** data — no external services
-required. Use it to confirm the environment before provisioning a GPU.
-
-### R4. Data and models *(ARI §B: Datasets)*
-
-#### Download links
-
-Both benchmarks are **public, third-party artifacts** (not authored by us); LASO
-consumes them unmodified. Obtain each from its canonical source below, then point
-`$LLMSQL_DATA_ROOT` at the result (layout in the next subsection).
-
-| Benchmark | What LASO uses | Code / paper | Data download |
-|-----------|----------------|--------------|---------------|
-| **SemBench** | cars / ecomm / movie / mmqa / animals scenarios | [github.com/SemBench/SemBench](https://github.com/SemBench/SemBench/) · [arXiv:2511.01716](https://arxiv.org/abs/2511.01716) | Auto-downloaded from Google Drive on first harness run (per-scenario file IDs below) |
-| **LRO-Bench** | `santos` tables for the four `LRO_match*` join queries | [github.com/LROBench/LROBench](https://github.com/LROBench/LROBench/) · [arXiv:2603.02537](https://arxiv.org/abs/2603.02537) | Clone the repo's database CSVs (27 DBs from BIRD / Magellan / NextiaJD / Santos) |
-
-**SemBench** ships an automatic downloader (vendored at `third_party/sembench`): its
-harness pulls each scenario's multimodal archive from Google Drive on first run and
-materializes the tables locally. The per-scenario Google Drive file IDs wired into the
-downloader (direct link form: `https://drive.google.com/file/d/<file_id>/view`) are:
-
-| Scenario | Google Drive file ID |
-|----------|----------------------|
-| cars     | `1ER5pooCIi2q6ZTYUrJw_ha_X3byNQB9M` |
-| ecomm    | `1fVV9PLgIMT-e-zxFM5ksdnN8xQlfgnmb` |
-| movie    | `1WkeXN3V5A6h-D_oeWvv2G_xs2PgzcQu0` |
-| mmqa     | `1oHXq5oxIfsyoNy9aCQ0V9G3W4puqHC6i` |
-| animals  | `1HG6tvXIA0BtpqbZqCR46oNSeY2yZ4Lko` |
-
-**LRO-Bench** distributes its relational databases through the LROBench repository above.
-LASO's four join queries (`LRO_match{113,121,202,305}`) read only the `santos` tables;
-clone the repo and place its `databases/` tree where `$LROBENCH_DATABASES_DIR` points
-(default `$LLMSQL_DATA_ROOT/databases/`).
-
-> **Licenses.** SemBench and LRO-Bench retain their upstream licenses (see each
-> repository); the underlying media inherit their original dataset licenses (e.g. the
-> SemBench scenario sources on Kaggle / Google Drive, and the public-sector `santos`
-> tables). LASO's own code is MIT.
-
-#### Directory layout
-
-All data/model locations are resolved from the environment variable
-`LLMSQL_DATA_ROOT` (default: your home directory). No paths are hardcoded. Lay out the
-inputs as follows and point the variable at the root:
-
-```bash
-export LLMSQL_DATA_ROOT=/path/to/data_root
-```
-
-```
-$LLMSQL_DATA_ROOT/
-├── SemBench/files/<scenario>/          # scenario ∈ {cars, ecomm, movie, mmqa, animals, ...}
-│   ├── data/sf_<scale>/                #   materialized tables (per scale factor)
-│   └── raw_results/ground_truth/Q*.csv #   human reference labels (evaluation only)
-├── siglip-base-patch16-224/            # embedding model (HuggingFace snapshot)
-└── AI_UDF_private/.../spark-semantic-plugin_...jar   # Spark semantic-operator JAR
-```
-
-- **SemBench** provides the cars / ecomm / movie / mmqa / animals scenarios.
-- **LRO-Bench** provides the `LRO_match*` join queries; `run_lrobench_select127_grid.py`
-  reads its tables from `$LLMSQL_DATA_ROOT` as well.
-- **Pairwise-join ground truth** for the company/flickr/roxford/veri scenarios can be
-  regenerated with the `dataset/*_groundtruth.py` scripts (each takes `--data_dir`).
-- **Embedding model:** any SigLIP-class encoder; the default is `siglip-base-patch16-224`.
-  Override with the `EMBEDDING_MODEL` constant at the top of the run scripts.
-
-> If your directory layout differs, either symlink it under `$LLMSQL_DATA_ROOT` with the
-> structure above, or edit the per-scenario `data_dir` / `gt_path` defaults near the top
-> of `run.py`.
-
-#### Downloading the benchmark data
-
-Download each benchmark from its canonical source (full link table in "Download links"
-above), then materialize it with its own tooling (vendored under `third_party/`, see
-"Reproducing the Baselines" below) and point `$LLMSQL_DATA_ROOT` at the result.
-
-**SemBench** — [github.com/SemBench/SemBench](https://github.com/SemBench/SemBench/)
-([arXiv:2511.01716](https://arxiv.org/abs/2511.01716)). The cars / ecomm / movie / mmqa /
-animals scenarios **auto-download from Google Drive and build** their multimodal databases
-on the first run of the harness (per-scenario Google Drive file IDs listed under "Download
-links" above) — no manual download step:
-
-```bash
-cd third_party/sembench
-pip install -r requirements.txt            # into the `sembench` env
-# Downloads + materializes data into third_party/sembench/files/<scenario>/data/sf_<sf>/
-python3 src/run.py --systems lotus --use-cases cars ecomm mmqa animals movie \
-        --scale-factor <sf>
-# Re-use the materialized data on later runs (skip re-download/build):
-python3 src/run.py --systems lotus --use-cases cars --queries 3 --skip-setup ...
-```
-
-Each scenario has its own scale-factor range; pick the `--scale-factor` whose
-candidate-set size matches the workload table above (e.g. the full `cars` table is
-~157K rows, `mmqa_q7` ~230K). The downloaded media live under
-`third_party/sembench/files/*/data/` and are git-ignored — only query definitions
-and `raw_results/ground_truth/` human labels are vendored.
-
-**LRO-Bench** (the `LRO_match{113,121,202,305}` join queries) is built from the
-LROBench / BIRD relational databases. Clone the database CSVs from the public LROBench
-repository ([github.com/LROBench/LROBench](https://github.com/LROBench/LROBench/),
-[arXiv:2603.02537](https://arxiv.org/abs/2603.02537)) and place them under
-`$LLMSQL_DATA_ROOT/databases/` (the tree BARGAIN's grid reads via the
-`LROBENCH_DATABASES_DIR` environment variable, and LASO's harness reads for the
-`LRO_match*` queries). The four paper queries draw from the `santos`,
-`restaurants2`, and schools tables.
-
-### R5. Serve the expert MLLM *(ARI §C: serving stack)*
-
-```bash
 export HF_HOME=$HOME/hf-cache
 export VLLM_CACHE_DIR=$HOME/vllm-cache
 export TORCH_COMPILE_CACHE=$VLLM_CACHE_DIR/torch_compile_cache
@@ -363,13 +243,126 @@ vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --max-num-seqs 512 \
   --max-num-batched-tokens 32768 \
   --enable-prefix-caching \
-  --allowed-local-media-path /local-scratch/localhome/hza214/SemBench \
+  --allowed-local-media-path $LASO_DATA_ROOT/SemBench \
   > vllm_server_30b.log 2>&1 &
 ```
 
 The run scripts call `http://localhost:8000/v1/chat/completions` and snapshot vLLM's
 Prometheus `/metrics` to count tokens for the (Java-side) baseline path. Override the
 endpoint with `VLLM_METRICS_URL` if you serve elsewhere.
+
+
+
+bash /localhome/hza214/LASO/create_run_env.sh
+```
+
+
+### R4. Data and models *(ARI §B: Datasets)*
+
+#### Download links
+
+Both benchmarks are **public, third-party artifacts** (not authored by us); LASO
+consumes them unmodified. Obtain each from its canonical source below, then point
+`$LASO_DATA_ROOT` at the result (layout in the next subsection).
+
+| Benchmark | What LASO uses | Code / paper | Data download |
+|-----------|----------------|--------------|---------------|
+| **SemBench** | cars / ecomm / movie / mmqa / animals scenarios | [github.com/SemBench/SemBench](https://github.com/SemBench/SemBench/) · [arXiv:2511.01716](https://arxiv.org/abs/2511.01716) | Auto-downloaded from Google Drive on first harness run (per-scenario file IDs below) |
+| **LRO-Bench** | `santos` tables for the four `LRO_match*` join queries | [github.com/LROBench/LROBench](https://github.com/LROBench/LROBench/) · [arXiv:2603.02537](https://arxiv.org/abs/2603.02537) | Clone the repo's database CSVs (27 DBs from BIRD / Magellan / NextiaJD / Santos) |
+
+**SemBench** ships an automatic downloader (vendored at `third_party/sembench`): its
+harness pulls each scenario's multimodal archive from Google Drive on first run and
+materializes the tables locally. The per-scenario Google Drive file IDs wired into the
+downloader (direct link form: `https://drive.google.com/file/d/<file_id>/view`) are:
+
+| Scenario | Google Drive file ID |
+|----------|----------------------|
+| cars     | `1ER5pooCIi2q6ZTYUrJw_ha_X3byNQB9M` |
+| ecomm    | `1fVV9PLgIMT-e-zxFM5ksdnN8xQlfgnmb` |
+| movie    | `1WkeXN3V5A6h-D_oeWvv2G_xs2PgzcQu0` |
+| mmqa     | `1oHXq5oxIfsyoNy9aCQ0V9G3W4puqHC6i` |
+| animals  | `1HG6tvXIA0BtpqbZqCR46oNSeY2yZ4Lko` |
+
+**LRO-Bench** distributes its relational databases through the LROBench repository above.
+LASO's four join queries (`LRO_match{113,121,202,305}`) read only the `santos` tables;
+clone the repo and place its `databases/` tree where `$LROBENCH_DATABASES_DIR` points
+(default `$LASO_DATA_ROOT/databases/`).
+
+> **Licenses.** SemBench and LRO-Bench retain their upstream licenses (see each
+> repository); the underlying media inherit their original dataset licenses (e.g. the
+> SemBench scenario sources on Kaggle / Google Drive, and the public-sector `santos`
+> tables). LASO's own code is MIT.
+
+#### Directory layout
+
+All data/model locations are resolved from the environment variable
+`LASO_DATA_ROOT` (default: your home directory). No paths are hardcoded. Lay out the
+inputs as follows and point the variable at the root:
+
+```bash
+export LASO_DATA_ROOT=/path/to/data_root
+```
+
+```
+$LASO_DATA_ROOT/
+├── SemBench/files/<scenario>/          # scenario ∈ {cars, ecomm, movie, mmqa, animals, ...}
+│   ├── data/sf_<scale>/                #   materialized tables (per scale factor)
+│   └── raw_results/ground_truth/Q*.csv #   human reference labels (evaluation only)
+├── siglip-base-patch16-224/            # embedding model (HuggingFace snapshot)
+└── AI_UDF_private/.../spark-semantic-plugin_...jar   # Spark semantic-operator JAR
+```
+
+- **SemBench** provides the cars / ecomm / movie / mmqa / animals scenarios.
+- **LRO-Bench** provides the `LRO_match*` join queries; `run_lrobench_select127_grid.py`
+  reads its tables from `$LASO_DATA_ROOT` as well.
+- **Pairwise-join ground truth** for the company/flickr/roxford/veri scenarios can be
+  regenerated with the `dataset/*_groundtruth.py` scripts (each takes `--data_dir`).
+- **Embedding model:** any SigLIP-class encoder; the default is `siglip-base-patch16-224`.
+  Override with the `EMBEDDING_MODEL` constant at the top of the run scripts.
+
+> If your directory layout differs, either symlink it under `$LASO_DATA_ROOT` with the
+> structure above, or edit the per-scenario `data_dir` / `gt_path` defaults near the top
+> of `run.py`.
+
+#### Downloading the benchmark data
+
+Download each benchmark from its canonical source (full link table in "Download links"
+above), then materialize it with its own tooling (vendored under `third_party/`, see
+"Reproducing the Baselines" below) and point `$LASO_DATA_ROOT` at the result.
+
+**SemBench** — [github.com/SemBench/SemBench](https://github.com/SemBench/SemBench/)
+([arXiv:2511.01716](https://arxiv.org/abs/2511.01716)). The cars / ecomm / movie / mmqa /
+animals scenarios **auto-download from Google Drive and build** their multimodal databases
+on the first run of the harness (per-scenario Google Drive file IDs listed under "Download
+links" above) — no manual download step:
+
+```bash
+cd third_party/sembench
+pip install -r requirements.txt            # into the `sembench` env
+# Downloads + materializes data into third_party/sembench/files/<scenario>/data/sf_<sf>/
+python3 src/run.py --systems lotus --use-cases cars ecomm mmqa animals movie \
+        --scale-factor <sf>
+# Re-use the materialized data on later runs (skip re-download/build):
+python3 src/run.py --systems lotus --use-cases cars --queries 3 --skip-setup ...
+```
+
+Each scenario has its own scale-factor range; pick the `--scale-factor` whose
+candidate-set size matches the workload table above (e.g. the full `cars` table is
+~157K rows, `mmqa_q7` ~230K). The downloaded media live under
+`third_party/sembench/files/*/data/` and are git-ignored — only query definitions
+and `raw_results/ground_truth/` human labels are vendored.
+
+**LRO-Bench** (the `LRO_match{113,121,202,305}` join queries) is built from the
+LROBench / BIRD relational databases. Clone the database CSVs from the public LROBench
+repository ([github.com/LROBench/LROBench](https://github.com/LROBench/LROBench/),
+[arXiv:2603.02537](https://arxiv.org/abs/2603.02537)) and place them under
+`$LASO_DATA_ROOT/databases/` (the tree BARGAIN's grid reads via the
+`LROBENCH_DATABASES_DIR` environment variable, and LASO's harness reads for the
+`LRO_match*` queries). The four paper queries draw from the `santos`,
+`restaurants2`, and schools tables.
+
+### R5. Serve the expert MLLM *(ARI §C: serving stack)*
+
 
 ### R6. Run the experiments → one command per paper experiment *(ARI §D: experiment workflow)*
 
@@ -394,7 +387,7 @@ the recommended entry point.
 Run them directly:
 
 ```bash
-export LLMSQL_DATA_ROOT=
+export LASO_DATA_ROOT=
 bash experiments/01_main_system_comparison.sh      # Table 2, Fig 1–2
 bash experiments/02_sampling_policy_ablation.sh     # Table 3
 bash experiments/05_hyperparameter_sensitivity.sh   # Fig 3
@@ -558,9 +551,9 @@ benchmark data via the environment, then run a tag or group:
 ```bash
 cd third_party/bargain
 pip install -e .                                   # or: pip install -r ../sembench/requirements.txt
-export LLMSQL_DATA_ROOT=/path/to/data_root
-export SEMBENCH_ROOT=$LLMSQL_DATA_ROOT/SemBench/files          # or ../sembench/files
-export LROBENCH_DATABASES_DIR=$LLMSQL_DATA_ROOT/databases
+export LASO_DATA_ROOT=/path/to/data_root
+export SEMBENCH_ROOT=$LASO_DATA_ROOT/SemBench/files          # or ../sembench/files
+export LROBENCH_DATABASES_DIR=$LASO_DATA_ROOT/databases
 
 # A group (ecomm | mmqa | cars | animals | movie | match | all) or a single tag (cars_q3, match113)
 python3 examples/run_bargain_galaxy_grid.py ecomm \
@@ -583,7 +576,7 @@ label propagation or router. Select it through the `LASO_ABLATIONS` env var (lab
 
 ```bash
 # from the repo root
-export LLMSQL_DATA_ROOT=/path/to/data_root
+export LASO_DATA_ROOT=/path/to/data_root
 LASO_ABLATIONS="uqe_active+lr_only" python3 run.py ecomm_q7      # one query
 LASO_ABLATIONS="uqe_active+lr_only" python3 run.py ecomm         # a scenario
 ```
