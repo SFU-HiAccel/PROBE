@@ -196,92 +196,13 @@ labels returned by the expert MLLM during sampling and rollback.
 
 ---
 
-## Key Hyperparameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `sampling_method` | `"active_learning"` | One of `active_learning`, `random`, `top_k`, `stratified`, `kmeans_stratified` |
-| `sample_size` | 5% of `N` | Total LLM oracle call budget `B` |
-| `als_vs_ratio` | 0.5 | Explore fraction `ρ`: budget for `LocateThreshold` vs. boundary fill |
-| `als_B1` | 5 | Batch size per `LocateThreshold` iteration |
-| `als_n_modes` | 1 | Number of threshold modes to detect |
-| `lp_enabled` | `True` | Enable label propagation (vs. logistic-regression only) |
-| `lp_alpha` | 0.8 | Bias-diffusion damping |
-| `lp_beta` | 0.8 | Homogeneity-propagation damping |
-| `lp_num_iter` | 50 | Max diffusion iterations per phase |
-| `lp_tol` | 1e-4 | Early-exit convergence tolerance |
-| `lp_patience` | 5 | Consecutive below-tolerance iterations before exit |
-| `confidence_threshold` | 0.5 | Decision threshold `θ` on `z^prop` |
-| `knn_k` | auto | k-NN graph neighbors; auto = `max(5, min(⌊log₂(N)·3⌋, 50))` |
-| `router_budget_pct` | — | Verification budget `B_v` for the online model router |
+### R1. Hardware & software environment
 
----
+- **OS & Software:** Linux (tested on Ubuntu). **Python:** 3.10–3.12. **Java:** 8 or 11 (for PySpark 3.3).  CUDA 12.4 toolkit, vLLM 0.20.0, and transformers 4.57.0
+- **GPU** Two NVIDIA RTX PRO 6000 Blackwell Max-Q GPUs
+- **CPU** Intel Xeon w7-3445 with 20 cores, with 125 GB of RAM. 
 
-## Quick Start (API)
-
-### Apply a semantic operator
-
-```python
-from sem_ops_register import register_semantic_operators
-
-register_semantic_operators(spark)
-
-# Boundary-aware active-learning sampling + label propagation + router
-matches = df.sem_filter(
-    "the car in {image_path} is not damaged",
-    proxy_sample=True,
-    sampling_method="active_learning",
-    sample_size=0.05,
-)
-```
-
----
-
-## Reproducibility
-
-This section is organized around the **ACM SIGMOD Availability & Reproducibility
-Initiative (ARI)** author checklist — *Source Code Info* (§A), *Datasets Info* (§B),
-*Hardware & Software Environment* (§C), and *Experimentation Info* (§D, including the
-claim→command map and expected results). It gives a step-by-step path from a clean
-machine to the paper's headline numbers and figures, ordered by cost — a **GPU-free
-smoke test** first, then the full GPU/LLM reproduction.
-
-### Artifact metadata
-
-| Field | Value |
-|-------|-------|
-| Paper | *Anonymous SIGMOD submission* — ACM DL link added on acceptance |
-| Artifact repository | This repository (self-contained; baselines vendored under `third_party/`) |
-| License | MIT — see [`LICENSE`](LICENSE) |
-| Languages | Python 3.10–3.12 (pipeline); Scala 2.12 / Spark 3.3 plugin shipped as a prebuilt JAR |
-| Tested OS | Linux (Ubuntu) |
-| External datasets | **SemBench** and **LRO-Bench** — public; download in §B below |
-| Headline claims | Quality parity at up to **212×** speedup (9.5× geo-mean) and **16.34×** token reduction |
-
-**ARI checklist → where it lives in this README**
-
-| ARI item | Section |
-|----------|---------|
-| §A Source code (repo, languages, packages) | [Repository Layout](#repository-layout) · R1 · R2 |
-| §B Datasets (download, generation, license) | **R4 — Data and models** (download links) |
-| §C Hardware & software environment | R1 · R5 |
-| §D Experiment workflow + expected results | R3 (smoke) · R6–R8 (run) · R9 (expected) |
-
-### R0. What you can reproduce, and at what cost
-
-| Tier | Needs | Reproduces | Wall-clock |
-|------|-------|------------|-----------|
-| **Smoke test** | CPU only | Pipeline unit tests (sampler, label propagation, calibration, router) | < 1 min |
-| **Single query** | 1 GPU + data | One row of the main results table | minutes–1 h |
-| **Full grid** | 1 GPU + data | Main results table, ablations, all figures | hours–1 day |
-
-### R1. Requirements *(ARI §C: Hardware & software environment)*
-
-- **OS:** Linux (tested on Ubuntu). **Python:** 3.10–3.12. **Java:** 8 or 11 (for PySpark 3.3).
-- **CPU-only** is sufficient for the smoke test (R3).
-- **GPU** is required to serve the expert MLLM and run the embedding model for the full
-  reproduction. Results in the paper were produced with a single modern data-center GPU
-  (≥ 24 GB) serving the MLLM via vLLM; smaller GPUs work with a smaller served model.
 - An **OpenAI-compatible LLM endpoint** (any server works; we use vLLM). Default endpoint
   `http://localhost:8000/v1`.
 

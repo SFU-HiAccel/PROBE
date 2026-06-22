@@ -15,9 +15,7 @@ set -euo pipefail
 
 ENV_NAME="deploy"
 SOURCE_ENV="vllm"          # the live env whose vLLM version "deploy" must match
-# Target vLLM version. Defaults to 0.15.0; override with e.g. VLLM_VERSION=0.16.0.
-# When set, this wins over whatever the live "vllm" env reports.
-VLLM_VERSION="${VLLM_VERSION:-0.15.0}"
+VLLM_VERSION="${VLLM_VERSION:-0.20.0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 YML="$SCRIPT_DIR/environment.deploy.yml"
 LOCK="$SCRIPT_DIR/requirements.deploy.lock.txt"
