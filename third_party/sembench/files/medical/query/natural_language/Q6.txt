@@ -1,0 +1,1 @@
+Find patients who are sick according to at least one modality but healthy according to another modality, consider only patients with two or more available modalities. Consider only symptoms, x-ray images, and lung audio recordings.

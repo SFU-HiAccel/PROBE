@@ -1,0 +1,10 @@
+{
+    "policy": "MaxQuality",
+    "execution_strategy": "parallel",
+    "max_workers": 20,
+    "join_parallelism": 20,
+    "verbose": false,
+    "progress": true,
+    "reasoning_effort": "minimal",
+    "available_models": ["GPT_5_MINI"]
+}

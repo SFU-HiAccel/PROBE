@@ -1,0 +1,22 @@
+{
+    "models": [
+        {
+            "modalities": ["text", "image"],
+            "priority": 10,
+            "kwargs": {
+                "filter": {
+                    "model": "openai/llava-hf/llava-v1.6-mistral-7b-hf",
+                    "api_base": "http://localhost:8000/v1",
+                    "temperature": 0,
+                    "max_tokens": 1
+                },
+                "join": {
+                    "model": "openai/llava-hf/llava-v1.6-mistral-7b-hf",
+                    "api_base": "http://localhost:8000/v1",
+                    "temperature": 0,
+                    "stop": ["."]
+                }
+            }
+        }
+    ]
+}

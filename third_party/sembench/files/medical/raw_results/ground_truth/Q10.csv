@@ -1,0 +1,1201 @@
+index,patient_id,text_diagnosis
+12,8300,migraine
+28,7313,jaundice
+29,3813,jaundice
+47,8765,urinary tract infection
+64,10036,varicose veins
+75,3039,malaria
+100,9156,impetigo
+110,8241,chicken pox
+117,8478,peptic ulcer disease
+130,8117,bronchial asthma
+132,9117,diabetes
+144,11099,chicken pox
+174,235,typhoid
+175,10437,dimorphic hemorrhoids
+176,10704,pneumonia
+182,19,jaundice
+196,7350,malaria
+197,5067,arthritis
+202,9803,chicken pox
+206,1783,cervical spondylosis
+219,3925,impetigo
+234,7670,cervical spondylosis
+253,1642,jaundice
+255,3107,chicken pox
+265,9417,arthritis
+279,1138,psoriasis
+292,7910,common cold
+306,6268,fungal infection
+312,2657,diabetes
+332,10639,acne
+334,8694,varicose veins
+335,9782,migraine
+337,3386,malaria
+340,2645,migraine
+350,799,typhoid
+356,1725,malaria
+379,6525,malaria
+394,9508,dimorphic hemorrhoids
+402,7846,varicose veins
+413,1818,jaundice
+417,7870,fungal infection
+428,4114,common cold
+433,6541,psoriasis
+444,8620,gastroesophageal reflux disease
+445,8426,malaria
+449,11048,peptic ulcer disease
+456,1219,psoriasis
+465,5853,acne
+493,190,acne
+498,7676,typhoid
+506,6287,typhoid
+529,8412,pneumonia
+531,10258,gastroesophageal reflux disease
+548,7290,arthritis
+560,1964,cervical spondylosis
+584,2886,bronchial asthma
+600,6686,dengue
+611,7646,cervical spondylosis
+618,6066,varicose veins
+632,8552,hypertension
+634,7932,drug reaction
+640,4949,pneumonia
+652,10202,fungal infection
+670,5298,dengue
+686,3738,fungal infection
+688,2280,jaundice
+692,10596,cervical spondylosis
+698,5191,arthritis
+700,22,common cold
+714,2962,pneumonia
+744,3415,hypertension
+750,8397,arthritis
+765,9716,pneumonia
+772,4163,peptic ulcer disease
+776,2815,dengue
+777,5066,fungal infection
+783,9892,bronchial asthma
+788,3539,dimorphic hemorrhoids
+790,10064,impetigo
+801,8798,malaria
+805,2981,jaundice
+812,2935,pneumonia
+825,9437,pneumonia
+827,1351,impetigo
+831,4971,bronchial asthma
+837,3509,chicken pox
+838,1261,acne
+863,8137,hypertension
+864,593,hypertension
+900,10641,typhoid
+908,321,pneumonia
+936,4180,cervical spondylosis
+946,1406,gastroesophageal reflux disease
+950,6714,peptic ulcer disease
+963,4716,allergy
+964,7100,urinary tract infection
+966,885,psoriasis
+971,6038,impetigo
+985,6944,pneumonia
+995,677,jaundice
+1003,206,peptic ulcer disease
+1022,10923,varicose veins
+1032,4138,drug reaction
+1065,7465,migraine
+1074,9795,typhoid
+1076,8189,migraine
+1098,3491,malaria
+1102,2534,malaria
+1104,7330,pneumonia
+1130,8071,jaundice
+1131,5597,migraine
+1135,11070,hypertension
+1140,3185,drug reaction
+1141,10096,gastroesophageal reflux disease
+1149,740,psoriasis
+1153,10901,dengue
+1158,2383,cervical spondylosis
+1160,2348,acne
+1161,94,chicken pox
+1172,7260,pneumonia
+1180,9353,dengue
+1187,673,urinary tract infection
+1192,10026,gastroesophageal reflux disease
+1216,7725,jaundice
+1223,6617,migraine
+1224,6810,arthritis
+1228,2147,dimorphic hemorrhoids
+1258,3638,allergy
+1283,5914,drug reaction
+1292,371,psoriasis
+1304,3567,allergy
+1329,9660,malaria
+1332,7757,typhoid
+1338,652,gastroesophageal reflux disease
+1358,8466,fungal infection
+1368,1957,typhoid
+1372,6486,chicken pox
+1375,5846,fungal infection
+1385,6809,urinary tract infection
+1393,9537,gastroesophageal reflux disease
+1404,3947,typhoid
+1423,4181,migraine
+1431,10242,allergy
+1432,10151,diabetes
+1437,3263,psoriasis
+1440,5065,common cold
+1488,10870,fungal infection
+1511,8158,acne
+1515,2429,peptic ulcer disease
+1524,548,diabetes
+1527,10675,dimorphic hemorrhoids
+1529,3206,impetigo
+1541,4012,acne
+1553,8278,fungal infection
+1555,7034,malaria
+1592,5631,fungal infection
+1597,5366,cervical spondylosis
+1601,8044,migraine
+1613,3238,allergy
+1617,8698,typhoid
+1630,4587,malaria
+1643,5995,dimorphic hemorrhoids
+1652,6732,migraine
+1660,849,typhoid
+1664,936,chicken pox
+1665,2925,peptic ulcer disease
+1667,6853,chicken pox
+1685,8706,gastroesophageal reflux disease
+1693,3522,peptic ulcer disease
+1701,6981,peptic ulcer disease
+1705,5495,chicken pox
+1713,2569,typhoid
+1714,199,varicose veins
+1730,5270,urinary tract infection
+1740,643,allergy
+1749,1228,typhoid
+1754,9531,hypertension
+1755,10891,typhoid
+1762,6177,psoriasis
+1774,11080,common cold
+1787,6679,dengue
+1789,218,jaundice
+1796,10345,fungal infection
+1801,8325,acne
+1802,10372,cervical spondylosis
+1804,8068,fungal infection
+1814,7320,migraine
+1816,9482,urinary tract infection
+1827,7135,psoriasis
+1842,6672,peptic ulcer disease
+1861,4738,fungal infection
+1872,6622,pneumonia
+1873,10049,psoriasis
+1893,2819,dengue
+1905,6538,hypertension
+1908,2148,dimorphic hemorrhoids
+1913,4574,dengue
+1916,10364,malaria
+1929,6798,acne
+1941,9747,varicose veins
+1954,10669,peptic ulcer disease
+1960,8946,drug reaction
+1978,4230,chicken pox
+1992,10107,common cold
+1993,6801,gastroesophageal reflux disease
+1994,10103,pneumonia
+1999,6040,migraine
+2020,10993,urinary tract infection
+2033,6708,drug reaction
+2062,9835,drug reaction
+2065,6530,allergy
+2068,5003,drug reaction
+2069,7460,cervical spondylosis
+2085,665,migraine
+2099,7519,gastroesophageal reflux disease
+2105,8014,pneumonia
+2108,3194,dengue
+2110,5423,arthritis
+2113,1193,gastroesophageal reflux disease
+2118,832,hypertension
+2119,5006,urinary tract infection
+2125,7894,fungal infection
+2133,11050,malaria
+2147,4233,common cold
+2182,9016,drug reaction
+2183,8939,common cold
+2186,6165,drug reaction
+2189,5254,arthritis
+2196,9516,hypertension
+2200,8097,dimorphic hemorrhoids
+2230,1088,urinary tract infection
+2233,95,gastroesophageal reflux disease
+2239,4715,arthritis
+2247,483,fungal infection
+2252,8465,impetigo
+2256,4032,dimorphic hemorrhoids
+2279,8991,cervical spondylosis
+2287,11091,pneumonia
+2290,7394,bronchial asthma
+2292,5167,urinary tract infection
+2298,1541,cervical spondylosis
+2301,4513,common cold
+2304,1106,diabetes
+2310,7729,common cold
+2316,8736,hypertension
+2335,9687,diabetes
+2346,4288,varicose veins
+2360,4506,impetigo
+2377,3504,jaundice
+2379,9430,peptic ulcer disease
+2383,2929,bronchial asthma
+2387,9854,allergy
+2391,5027,psoriasis
+2403,7327,psoriasis
+2414,7525,dimorphic hemorrhoids
+2420,6596,gastroesophageal reflux disease
+2429,6903,varicose veins
+2437,5873,dengue
+2439,1164,cervical spondylosis
+2445,6500,malaria
+2446,6591,impetigo
+2452,3653,dimorphic hemorrhoids
+2453,5790,drug reaction
+2459,9889,migraine
+2468,2194,impetigo
+2472,1453,peptic ulcer disease
+2478,5575,hypertension
+2485,2214,hypertension
+2502,6970,varicose veins
+2516,3657,peptic ulcer disease
+2535,2831,cervical spondylosis
+2538,1451,hypertension
+2542,10532,migraine
+2556,232,psoriasis
+2563,3526,bronchial asthma
+2570,3511,hypertension
+2598,552,arthritis
+2604,3704,migraine
+2609,9347,cervical spondylosis
+2620,1828,bronchial asthma
+2627,4327,psoriasis
+2642,3425,fungal infection
+2643,6378,cervical spondylosis
+2645,10125,cervical spondylosis
+2671,1504,dimorphic hemorrhoids
+2672,10867,diabetes
+2675,7689,chicken pox
+2676,1681,varicose veins
+2681,3848,urinary tract infection
+2684,6391,arthritis
+2689,6270,allergy
+2700,9815,migraine
+2709,1263,cervical spondylosis
+2722,7476,peptic ulcer disease
+2727,2771,allergy
+2728,9496,cervical spondylosis
+2730,8346,dimorphic hemorrhoids
+2734,5061,drug reaction
+2738,4653,drug reaction
+2744,6621,bronchial asthma
+2747,9727,jaundice
+2750,8519,gastroesophageal reflux disease
+2753,7222,impetigo
+2775,7668,jaundice
+2792,3007,psoriasis
+2835,7116,fungal infection
+2842,5217,gastroesophageal reflux disease
+2858,10148,common cold
+2870,5629,impetigo
+2875,4145,arthritis
+2879,559,migraine
+2905,8431,jaundice
+2913,3563,pneumonia
+2914,2463,hypertension
+2932,10475,chicken pox
+2934,6388,impetigo
+2939,1208,chicken pox
+2950,5535,bronchial asthma
+2961,10427,migraine
+2963,10412,psoriasis
+2975,4961,urinary tract infection
+2978,10800,allergy
+2979,1073,impetigo
+3001,6031,bronchial asthma
+3004,8521,chicken pox
+3005,10236,allergy
+3056,10792,jaundice
+3058,8259,bronchial asthma
+3064,7377,psoriasis
+3065,4336,bronchial asthma
+3072,2960,chicken pox
+3077,1191,bronchial asthma
+3079,5576,diabetes
+3107,10452,chicken pox
+3113,7365,fungal infection
+3116,5765,acne
+3119,8359,malaria
+3122,875,cervical spondylosis
+3133,5849,diabetes
+3146,10155,common cold
+3147,6424,pneumonia
+3150,10077,acne
+3159,428,bronchial asthma
+3167,10480,acne
+3169,7726,urinary tract infection
+3170,2165,drug reaction
+3179,1070,malaria
+3196,8702,impetigo
+3198,4376,dimorphic hemorrhoids
+3209,6937,pneumonia
+3229,7724,diabetes
+3248,1316,urinary tract infection
+3266,10847,varicose veins
+3285,9621,psoriasis
+3303,2693,acne
+3320,398,arthritis
+3321,9514,arthritis
+3338,575,pneumonia
+3341,9426,peptic ulcer disease
+3359,5905,impetigo
+3366,5130,diabetes
+3390,4017,allergy
+3414,2656,chicken pox
+3425,5908,allergy
+3427,784,impetigo
+3433,5033,acne
+3438,10426,acne
+3448,6777,acne
+3460,1614,malaria
+3479,1648,bronchial asthma
+3481,3942,allergy
+3495,2959,pneumonia
+3500,9102,dengue
+3505,11101,dimorphic hemorrhoids
+3508,7606,cervical spondylosis
+3526,10445,diabetes
+3535,8937,allergy
+3537,9748,bronchial asthma
+3544,7989,dimorphic hemorrhoids
+3545,10217,allergy
+3561,3181,hypertension
+3562,9230,pneumonia
+3589,3763,typhoid
+3591,8175,psoriasis
+3602,5015,psoriasis
+3603,3095,drug reaction
+3609,8440,diabetes
+3614,2473,peptic ulcer disease
+3615,2727,allergy
+3621,5662,pneumonia
+3632,8799,impetigo
+3638,662,allergy
+3651,10533,diabetes
+3673,7047,common cold
+3693,7358,dengue
+3705,8718,arthritis
+3716,7388,acne
+3729,8968,gastroesophageal reflux disease
+3737,6864,bronchial asthma
+3754,7107,chicken pox
+3755,10883,psoriasis
+3760,1327,peptic ulcer disease
+3778,231,dimorphic hemorrhoids
+3781,4231,dengue
+3782,4073,migraine
+3788,8444,malaria
+3791,3165,varicose veins
+3795,9981,allergy
+3801,7021,varicose veins
+3806,4250,impetigo
+3809,9413,migraine
+3810,8481,varicose veins
+3811,10626,typhoid
+3816,2827,diabetes
+3830,6126,bronchial asthma
+3878,5992,common cold
+3894,9776,dimorphic hemorrhoids
+3902,10496,dimorphic hemorrhoids
+3905,5481,typhoid
+3910,2702,dengue
+3912,9105,allergy
+3917,5595,impetigo
+3923,2160,typhoid
+3945,4821,arthritis
+3962,10223,drug reaction
+3964,3079,varicose veins
+3971,761,malaria
+3972,10418,migraine
+3978,6831,malaria
+3981,4240,gastroesophageal reflux disease
+3992,7564,allergy
+4004,3389,acne
+4016,9427,jaundice
+4022,3306,dengue
+4025,4771,diabetes
+4026,7630,urinary tract infection
+4047,2791,malaria
+4048,10525,common cold
+4052,3974,dimorphic hemorrhoids
+4058,9420,urinary tract infection
+4059,6151,common cold
+4060,1863,acne
+4087,6091,bronchial asthma
+4088,3144,bronchial asthma
+4093,7172,acne
+4095,3279,peptic ulcer disease
+4099,5460,drug reaction
+4105,8232,pneumonia
+4135,6813,gastroesophageal reflux disease
+4148,7875,gastroesophageal reflux disease
+4153,5008,peptic ulcer disease
+4193,9305,varicose veins
+4201,5931,cervical spondylosis
+4210,4142,typhoid
+4219,1240,bronchial asthma
+4223,8219,peptic ulcer disease
+4225,10567,typhoid
+4244,2583,cervical spondylosis
+4259,1211,cervical spondylosis
+4264,4837,hypertension
+4272,9089,jaundice
+4290,6588,dimorphic hemorrhoids
+4299,8823,typhoid
+4304,4801,bronchial asthma
+4349,5212,gastroesophageal reflux disease
+4352,5744,common cold
+4353,3805,cervical spondylosis
+4383,3961,chicken pox
+4414,2470,dengue
+4422,88,impetigo
+4428,5515,peptic ulcer disease
+4435,6384,allergy
+4459,2357,dimorphic hemorrhoids
+4470,2093,fungal infection
+4474,7511,typhoid
+4487,4437,dimorphic hemorrhoids
+4509,9092,allergy
+4524,6068,jaundice
+4541,1113,psoriasis
+4543,10802,peptic ulcer disease
+4546,9194,impetigo
+4554,9288,dimorphic hemorrhoids
+4559,8560,migraine
+4562,6370,typhoid
+4589,4475,arthritis
+4595,427,cervical spondylosis
+4599,3648,malaria
+4607,7349,arthritis
+4613,6857,peptic ulcer disease
+4617,4713,typhoid
+4620,952,acne
+4633,6701,acne
+4645,2643,bronchial asthma
+4646,11069,common cold
+4665,5840,drug reaction
+4667,4907,peptic ulcer disease
+4680,1437,peptic ulcer disease
+4681,2898,fungal infection
+4682,6913,migraine
+4683,3104,arthritis
+4686,1784,jaundice
+4701,1910,common cold
+4719,7084,dengue
+4722,3607,varicose veins
+4728,8143,peptic ulcer disease
+4732,3118,arthritis
+4741,2754,common cold
+4745,1145,migraine
+4756,1352,arthritis
+4769,2015,drug reaction
+4771,9460,hypertension
+4780,3323,malaria
+4815,8009,allergy
+4827,5594,varicose veins
+4833,7467,diabetes
+4834,8354,dimorphic hemorrhoids
+4845,9934,diabetes
+4848,2455,common cold
+4852,10940,peptic ulcer disease
+4857,9499,gastroesophageal reflux disease
+4863,8550,hypertension
+4876,4259,allergy
+4928,3586,diabetes
+4936,3063,malaria
+4942,2248,varicose veins
+4948,4646,typhoid
+4959,5537,drug reaction
+4969,9751,arthritis
+4982,10937,migraine
+4992,5193,impetigo
+5000,3494,cervical spondylosis
+5003,4326,chicken pox
+5023,2689,common cold
+5047,4824,dimorphic hemorrhoids
+5049,3779,jaundice
+5057,3472,chicken pox
+5065,6634,drug reaction
+5075,4253,dengue
+5076,6962,psoriasis
+5077,10956,bronchial asthma
+5093,690,peptic ulcer disease
+5096,5749,arthritis
+5098,217,malaria
+5110,400,gastroesophageal reflux disease
+5127,752,dengue
+5128,10494,varicose veins
+5139,4692,acne
+5140,9869,dengue
+5147,6167,peptic ulcer disease
+5154,3568,drug reaction
+5158,9192,chicken pox
+5184,80,fungal infection
+5188,6669,dimorphic hemorrhoids
+5195,1120,acne
+5201,8869,dimorphic hemorrhoids
+5202,5209,hypertension
+5204,9532,jaundice
+5206,8585,jaundice
+5213,7941,common cold
+5216,8280,dimorphic hemorrhoids
+5221,6397,chicken pox
+5231,970,drug reaction
+5239,10447,impetigo
+5241,3299,urinary tract infection
+5246,4417,allergy
+5254,8700,fungal infection
+5257,26,fungal infection
+5270,7672,chicken pox
+5294,2456,dimorphic hemorrhoids
+5295,5598,chicken pox
+5305,2260,allergy
+5312,8865,dimorphic hemorrhoids
+5318,8893,common cold
+5333,6574,gastroesophageal reflux disease
+5338,415,jaundice
+5342,2527,chicken pox
+5346,10462,hypertension
+5364,10431,hypertension
+5366,9222,peptic ulcer disease
+5372,2956,malaria
+5387,2888,cervical spondylosis
+5392,1876,urinary tract infection
+5394,5242,diabetes
+5397,8871,gastroesophageal reflux disease
+5411,4504,fungal infection
+5420,8251,acne
+5449,8258,common cold
+5452,2721,migraine
+5461,4844,peptic ulcer disease
+5477,4412,acne
+5491,1979,arthritis
+5492,7165,migraine
+5497,7413,acne
+5502,6294,psoriasis
+5505,1324,jaundice
+5507,9675,dengue
+5518,101,urinary tract infection
+5521,3634,dimorphic hemorrhoids
+5524,6071,psoriasis
+5525,8913,malaria
+5531,8930,arthritis
+5532,5258,gastroesophageal reflux disease
+5533,132,chicken pox
+5535,2861,common cold
+5550,2964,impetigo
+5553,9475,cervical spondylosis
+5559,5884,bronchial asthma
+5564,1408,typhoid
+5584,6834,typhoid
+5587,3708,psoriasis
+5597,994,hypertension
+5607,3266,cervical spondylosis
+5608,9044,varicose veins
+5610,5794,psoriasis
+5611,6947,jaundice
+5612,9857,impetigo
+5623,5668,dengue
+5631,9866,dimorphic hemorrhoids
+5642,3375,varicose veins
+5644,9897,pneumonia
+5657,1439,jaundice
+5665,4910,malaria
+5667,9805,arthritis
+5671,4996,pneumonia
+5688,8365,dengue
+5707,4876,urinary tract infection
+5712,9255,peptic ulcer disease
+5716,6224,drug reaction
+5731,9851,gastroesophageal reflux disease
+5744,10584,typhoid
+5762,7453,jaundice
+5775,10676,drug reaction
+5786,8435,arthritis
+5798,3967,allergy
+5805,2631,urinary tract infection
+5837,4608,diabetes
+5847,3210,jaundice
+5854,3345,diabetes
+5857,862,varicose veins
+5859,5939,hypertension
+5862,5416,acne
+5866,3674,dengue
+5876,6926,bronchial asthma
+5886,7704,malaria
+5887,10175,drug reaction
+5898,1853,impetigo
+5906,10371,gastroesophageal reflux disease
+5911,7581,migraine
+5938,1785,dengue
+5945,3219,hypertension
+5954,1927,cervical spondylosis
+5967,4866,acne
+5977,4934,gastroesophageal reflux disease
+5982,4041,pneumonia
+5994,1071,pneumonia
+5995,9219,varicose veins
+5997,6511,impetigo
+6004,3891,bronchial asthma
+6006,6991,fungal infection
+6032,7103,arthritis
+6033,1200,malaria
+6035,882,gastroesophageal reflux disease
+6043,2778,bronchial asthma
+6049,6412,common cold
+6053,6534,urinary tract infection
+6072,4802,arthritis
+6075,2633,dimorphic hemorrhoids
+6079,221,urinary tract infection
+6090,4948,dimorphic hemorrhoids
+6096,5957,varicose veins
+6099,9932,acne
+6103,1695,arthritis
+6111,4639,dengue
+6115,9911,dengue
+6116,2154,common cold
+6134,2110,jaundice
+6168,3038,drug reaction
+6200,9848,migraine
+6208,7055,drug reaction
+6209,9382,allergy
+6210,5044,fungal infection
+6214,928,dimorphic hemorrhoids
+6223,5284,urinary tract infection
+6237,10752,allergy
+6240,8139,dengue
+6243,9523,fungal infection
+6245,7734,typhoid
+6249,307,typhoid
+6257,7531,malaria
+6260,9469,varicose veins
+6271,9722,impetigo
+6272,6001,diabetes
+6275,9551,diabetes
+6283,8343,psoriasis
+6293,5200,pneumonia
+6311,5042,dengue
+6321,2680,impetigo
+6336,8920,cervical spondylosis
+6338,7466,psoriasis
+6366,1694,allergy
+6373,5875,chicken pox
+6376,7019,typhoid
+6389,8005,typhoid
+6406,3221,malaria
+6437,2999,varicose veins
+6447,1799,typhoid
+6452,5326,varicose veins
+6453,6402,diabetes
+6457,945,peptic ulcer disease
+6458,4785,malaria
+6460,1098,hypertension
+6486,9498,acne
+6490,5241,allergy
+6507,4421,gastroesophageal reflux disease
+6516,2927,fungal infection
+6518,8641,gastroesophageal reflux disease
+6522,5722,hypertension
+6539,4349,drug reaction
+6541,120,fungal infection
+6567,2340,urinary tract infection
+6569,1835,pneumonia
+6581,3021,gastroesophageal reflux disease
+6587,2520,cervical spondylosis
+6631,8126,cervical spondylosis
+6689,6210,impetigo
+6693,124,impetigo
+6699,9187,fungal infection
+6704,10685,migraine
+6714,9056,bronchial asthma
+6716,7059,hypertension
+6726,1289,bronchial asthma
+6728,2459,chicken pox
+6732,9509,malaria
+6743,7821,common cold
+6746,7931,allergy
+6750,1958,cervical spondylosis
+6751,2375,urinary tract infection
+6760,6049,impetigo
+6768,238,bronchial asthma
+6777,10825,fungal infection
+6778,8237,impetigo
+6785,10301,arthritis
+6790,9984,dengue
+6794,5779,drug reaction
+6795,570,acne
+6798,8451,dengue
+6803,8855,chicken pox
+6832,9818,varicose veins
+6844,7491,common cold
+6849,1519,hypertension
+6857,3620,dengue
+6861,6442,hypertension
+6863,3558,jaundice
+6868,198,psoriasis
+6872,7626,bronchial asthma
+6878,5673,pneumonia
+6890,4901,typhoid
+6892,8548,dimorphic hemorrhoids
+6906,3784,psoriasis
+6916,3557,psoriasis
+6919,7656,impetigo
+6931,10979,allergy
+6933,4836,cervical spondylosis
+6964,10194,common cold
+6980,1878,migraine
+6986,6506,bronchial asthma
+6994,4508,dimorphic hemorrhoids
+6999,5323,dengue
+7006,2277,common cold
+7014,3860,peptic ulcer disease
+7015,7184,drug reaction
+7019,5639,allergy
+7027,3103,bronchial asthma
+7042,6692,jaundice
+7044,6103,peptic ulcer disease
+7047,1507,dimorphic hemorrhoids
+7058,7088,migraine
+7070,2288,migraine
+7080,6793,migraine
+7081,2589,impetigo
+7085,4874,urinary tract infection
+7086,2561,dengue
+7093,8517,typhoid
+7128,2345,gastroesophageal reflux disease
+7130,3649,hypertension
+7134,1123,malaria
+7144,9273,varicose veins
+7145,4518,varicose veins
+7157,10613,peptic ulcer disease
+7168,6368,allergy
+7177,3468,pneumonia
+7181,8903,fungal infection
+7190,9943,fungal infection
+7205,10726,urinary tract infection
+7227,171,pneumonia
+7255,2384,bronchial asthma
+7260,29,typhoid
+7264,4788,jaundice
+7282,5622,arthritis
+7291,1390,fungal infection
+7298,3692,acne
+7302,8796,varicose veins
+7303,1871,hypertension
+7306,3554,pneumonia
+7310,1382,chicken pox
+7312,6915,drug reaction
+7313,10801,psoriasis
+7333,4495,gastroesophageal reflux disease
+7363,7248,acne
+7370,9812,jaundice
+7372,3847,common cold
+7390,10300,gastroesophageal reflux disease
+7394,5303,peptic ulcer disease
+7399,1137,cervical spondylosis
+7411,10246,acne
+7416,1576,dengue
+7427,7464,urinary tract infection
+7430,7152,chicken pox
+7436,3715,bronchial asthma
+7447,4124,cervical spondylosis
+7458,388,common cold
+7462,4900,impetigo
+7468,10032,diabetes
+7478,534,allergy
+7514,7796,jaundice
+7520,11047,diabetes
+7538,4746,bronchial asthma
+7542,9227,psoriasis
+7549,7644,varicose veins
+7565,8298,drug reaction
+7571,9583,hypertension
+7578,4994,pneumonia
+7580,9600,psoriasis
+7606,8829,arthritis
+7613,10401,gastroesophageal reflux disease
+7637,4641,hypertension
+7662,6346,urinary tract infection
+7665,7136,hypertension
+7682,2980,malaria
+7688,7914,chicken pox
+7693,1965,common cold
+7697,7286,bronchial asthma
+7702,7387,cervical spondylosis
+7705,779,allergy
+7710,6011,varicose veins
+7742,8328,typhoid
+7748,676,malaria
+7766,3401,jaundice
+7768,8648,drug reaction
+7781,3133,varicose veins
+7793,1171,common cold
+7809,3583,jaundice
+7818,7715,cervical spondylosis
+7821,4299,dengue
+7829,6030,arthritis
+7847,4381,allergy
+7860,6891,urinary tract infection
+7865,6080,bronchial asthma
+7885,3369,fungal infection
+7899,1792,diabetes
+7901,2820,common cold
+7921,9169,bronchial asthma
+7925,9410,drug reaction
+7959,2679,varicose veins
+7963,14,urinary tract infection
+7968,7816,typhoid
+7973,7643,bronchial asthma
+7978,229,acne
+7983,10043,allergy
+8015,8371,dimorphic hemorrhoids
+8016,710,arthritis
+8038,6118,fungal infection
+8090,5730,typhoid
+8126,10521,dengue
+8131,3685,fungal infection
+8153,10983,common cold
+8159,10900,chicken pox
+8163,7678,migraine
+8165,6819,dengue
+8184,9868,malaria
+8190,8546,chicken pox
+8194,9744,common cold
+8196,7899,chicken pox
+8200,2736,bronchial asthma
+8217,9029,fungal infection
+8234,5088,psoriasis
+8236,8775,common cold
+8243,1121,varicose veins
+8258,335,pneumonia
+8260,1918,dengue
+8277,5295,pneumonia
+8294,8662,chicken pox
+8299,1626,diabetes
+8309,5292,chicken pox
+8322,8184,urinary tract infection
+8324,5082,migraine
+8328,1569,bronchial asthma
+8329,5552,psoriasis
+8333,781,dimorphic hemorrhoids
+8334,405,pneumonia
+8338,407,typhoid
+8339,3281,peptic ulcer disease
+8358,1220,impetigo
+8363,10569,diabetes
+8375,762,dengue
+8378,8961,arthritis
+8382,7364,hypertension
+8392,7243,peptic ulcer disease
+8394,7924,impetigo
+8405,5170,drug reaction
+8414,2597,diabetes
+8430,8691,allergy
+8432,2099,bronchial asthma
+8440,7884,dengue
+8447,1225,dimorphic hemorrhoids
+8449,133,diabetes
+8455,2709,acne
+8465,523,jaundice
+8469,10417,impetigo
+8493,6056,fungal infection
+8494,4828,cervical spondylosis
+8505,3688,allergy
+8513,5085,jaundice
+8514,8707,gastroesophageal reflux disease
+8520,8266,arthritis
+8528,8767,psoriasis
+8537,856,arthritis
+8538,1565,dengue
+8540,5203,varicose veins
+8545,10170,common cold
+8551,2566,drug reaction
+8553,2984,arthritis
+8567,5517,urinary tract infection
+8575,10285,chicken pox
+8588,6329,fungal infection
+8599,9828,malaria
+8630,9925,dimorphic hemorrhoids
+8646,3822,malaria
+8660,2688,cervical spondylosis
+8666,3075,pneumonia
+8675,3798,hypertension
+8687,3269,acne
+8707,10070,typhoid
+8719,10367,typhoid
+8723,900,urinary tract infection
+8726,8741,gastroesophageal reflux disease
+8731,10741,arthritis
+8737,1898,pneumonia
+8744,10,drug reaction
+8748,4887,diabetes
+8750,7998,psoriasis
+8759,2522,pneumonia
+8764,3744,dengue
+8775,6196,allergy
+8777,7236,drug reaction
+8789,5965,arthritis
+8791,2042,pneumonia
+8795,5385,malaria
+8796,2341,migraine
+8803,6605,impetigo
+8812,4813,bronchial asthma
+8819,10499,malaria
+8825,11074,urinary tract infection
+8837,9132,migraine
+8844,10787,gastroesophageal reflux disease
+8848,7559,impetigo
+8880,4274,fungal infection
+8897,439,pneumonia
+8899,9100,diabetes
+8918,2795,chicken pox
+8921,6762,allergy
+8961,10235,hypertension
+8964,3527,jaundice
+8969,1847,acne
+8971,4099,acne
+8973,6479,urinary tract infection
+9002,7231,drug reaction
+9009,7389,varicose veins
+9010,9063,migraine
+9023,10888,varicose veins
+9027,5899,varicose veins
+9029,3802,diabetes
+9032,2485,peptic ulcer disease
+9041,2674,dengue
+9045,9091,impetigo
+9047,1238,gastroesophageal reflux disease
+9052,9165,jaundice
+9061,11093,bronchial asthma
+9062,7793,urinary tract infection
+9073,1795,dimorphic hemorrhoids
+9089,934,gastroesophageal reflux disease
+9094,2516,pneumonia
+9107,10513,peptic ulcer disease
+9119,5518,diabetes
+9123,104,typhoid
+9125,5219,psoriasis
+9131,1708,diabetes
+9132,399,psoriasis
+9142,2720,acne
+9144,5233,diabetes
+9145,773,chicken pox
+9148,7992,cervical spondylosis
+9153,9478,fungal infection
+9169,10183,fungal infection
+9181,5911,typhoid
+9240,10075,diabetes
+9268,1517,gastroesophageal reflux disease
+9276,5237,pneumonia
+9294,10287,malaria
+9302,2742,psoriasis
+9311,2574,allergy
+9327,3286,psoriasis
+9371,9677,hypertension
+9380,9228,jaundice
+9390,3915,arthritis
+9394,449,acne
+9403,1483,fungal infection
+9408,3150,urinary tract infection
+9428,8589,cervical spondylosis
+9441,71,cervical spondylosis
+9443,1494,psoriasis
+9449,9534,gastroesophageal reflux disease
+9452,5904,bronchial asthma
+9453,5764,varicose veins
+9458,6059,dimorphic hemorrhoids
+9473,3014,allergy
+9474,220,jaundice
+9491,619,urinary tract infection
+9513,91,drug reaction
+9535,8679,cervical spondylosis
+9538,5330,urinary tract infection
+9540,8057,gastroesophageal reflux disease
+9552,7323,jaundice
+9564,3762,drug reaction
+9568,5440,bronchial asthma
+9592,8324,typhoid
+9603,8422,diabetes
+9609,2062,urinary tract infection
+9610,2629,migraine
+9612,9560,diabetes
+9613,3991,pneumonia
+9625,5894,varicose veins
+9627,10664,fungal infection
+9635,6026,arthritis
+9641,9435,dimorphic hemorrhoids
+9664,4849,gastroesophageal reflux disease
+9672,971,impetigo
+9677,914,fungal infection
+9678,5736,jaundice
+9684,5057,peptic ulcer disease
+9704,8975,jaundice
+9708,4975,peptic ulcer disease
+9711,2660,common cold
+9713,8791,urinary tract infection
+9729,8832,varicose veins
+9730,9144,malaria
+9743,884,migraine
+9749,7749,hypertension
+9791,8109,peptic ulcer disease
+9806,6751,pneumonia
+9810,1158,drug reaction
+9826,10707,hypertension
+9829,3742,diabetes
+9830,1376,hypertension
+9832,3989,drug reaction
+9840,8658,gastroesophageal reflux disease
+9843,135,typhoid
+9847,8861,migraine
+9855,6984,common cold
+9860,96,allergy
+9892,9544,acne
+9902,76,common cold
+9903,3995,peptic ulcer disease
+9916,2519,pneumonia
+9924,3857,varicose veins
+9937,6376,acne
+9944,7440,psoriasis
+9954,3706,acne
+9974,5482,dengue
+9981,227,malaria
+10003,4503,dimorphic hemorrhoids
+10005,3840,migraine
+10013,1893,chicken pox
+10014,5897,common cold
+10017,1232,pneumonia
+10020,8487,cervical spondylosis
+10024,2853,drug reaction
+10045,4762,chicken pox
+10068,8618,drug reaction
+10083,3803,acne
+10084,7224,hypertension
+10088,10122,acne
+10091,9766,acne
+10092,4212,migraine
+10100,6560,urinary tract infection
+10104,2261,gastroesophageal reflux disease
+10115,9251,arthritis
+10119,5532,drug reaction
+10125,10207,impetigo
+10136,4403,malaria
+10144,1937,arthritis
+10154,9388,fungal infection
+10167,2719,psoriasis
+10176,57,peptic ulcer disease
+10184,8249,varicose veins
+10190,2290,dengue
+10208,11085,peptic ulcer disease
+10215,7988,varicose veins
+10220,9046,gastroesophageal reflux disease
+10221,9098,diabetes
+10227,1438,diabetes
+10231,1183,fungal infection
+10261,1041,urinary tract infection
+10267,1346,gastroesophageal reflux disease
+10280,8536,cervical spondylosis
+10288,5434,peptic ulcer disease
+10296,9796,malaria
+10306,7001,pneumonia
+10319,4780,migraine
+10343,9287,dengue
+10348,786,cervical spondylosis
+10397,2413,diabetes
+10410,10488,urinary tract infection
+10412,6403,common cold
+10413,10582,migraine
+10416,4210,hypertension
+10424,4272,urinary tract infection
+10432,7145,psoriasis
+10433,6407,acne
+10434,4206,arthritis
+10445,10022,dimorphic hemorrhoids
+10463,6063,psoriasis
+10490,828,allergy
+10491,9124,dengue
+10497,8129,peptic ulcer disease
+10513,7038,arthritis
+10514,2529,malaria
+10531,374,dimorphic hemorrhoids
+10549,3105,impetigo
+10552,293,bronchial asthma
+10554,871,psoriasis
+10559,3853,hypertension
+10560,5596,arthritis
+10564,7161,dengue
+10567,6896,impetigo
+10571,2666,hypertension
+10579,9236,gastroesophageal reflux disease
+10606,5814,impetigo
+10615,9079,typhoid
+10616,10755,migraine
+10630,8486,impetigo
+10639,2619,jaundice
+10672,9210,chicken pox
+10674,490,dengue
+10676,7155,diabetes
+10685,3913,urinary tract infection
+10696,205,varicose veins
+10699,2590,chicken pox
+10717,8650,urinary tract infection
+10718,2281,chicken pox
+10739,10154,typhoid
+10758,6097,chicken pox
+10762,3574,urinary tract infection
+10775,6351,common cold
+10799,107,chicken pox
+10802,5364,hypertension
+10828,5645,typhoid
+10829,3201,drug reaction
+10837,2973,migraine
+10839,3496,arthritis
+10840,8697,drug reaction
+10842,1064,jaundice
+10844,4169,malaria
+10851,8654,dimorphic hemorrhoids
+10865,1558,diabetes
+10875,9349,pneumonia
+10876,2057,diabetes
+10878,9143,hypertension
+10888,6957,diabetes
+10892,4247,hypertension
+10898,1370,impetigo
+10929,696,migraine
+10941,5351,hypertension
+10950,10747,fungal infection
+10964,510,diabetes
+10969,9315,cervical spondylosis
+10976,4942,acne
+10983,10935,allergy
+10986,4176,psoriasis
+10992,1864,varicose veins
+11005,8713,typhoid
+11013,290,common cold
+11028,3647,common cold
+11040,5999,arthritis
+11046,5115,common cold
+11078,3342,drug reaction
+11079,5152,chicken pox
+11093,67,jaundice
+11095,2864,fungal infection
+11110,10464,jaundice

@@ -1,0 +1,1 @@
+Find five patients who have cancer in their family history and have lung problems according to their X-ray images (considered sick).
