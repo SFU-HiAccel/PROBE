@@ -1,5 +1,10 @@
 import os as _os  # noqa: E402  (anonymized path config)
-DATA_ROOT = _os.environ.get("LLMSQL_DATA_ROOT", _os.path.expanduser("~"))
+DATA_ROOT = _os.environ.get(
+    "LASO_DATA_ROOT",
+    _os.environ.get("LLMSQL_DATA_ROOT", _os.path.expanduser("~")),
+)
+_os.environ.setdefault("LASO_DATA_ROOT", DATA_ROOT)
+_os.environ.setdefault("LLMSQL_DATA_ROOT", DATA_ROOT)
 
 import contextlib
 import os
@@ -32,7 +37,10 @@ import sem_ops_register  # noqa: F401  -- import registers df.sem_filter / df.se
 MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct")
 #MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3.6-35B-A3B")
 
-JAR_PATH = f"{DATA_ROOT}/AI_UDF_private/sparkai/target/scala-2.12/spark-semantic-plugin_2.12-0.1.0-SNAPSHOT.jar"
+JAR_PATH = os.environ.get(
+    "LASO_SPARK_JAR",
+    "./spark-semantic-plugin_2.12-0.1.0-SNAPSHOT.jar",
+)
 EMBEDDING_MODEL = f"{DATA_ROOT}/siglip-base-patch16-224"
 
 # vLLM exposes Prometheus counters at /metrics on the same port as the OpenAI
@@ -170,7 +178,7 @@ def get_budget_pcts_for_query(query_tag: str) -> list:
 
 
 KNN_K_VALUES = ["auto"]
-RANDOM_SEED = 43
+RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "43"))
 
 # Active-learning sampler config (paper §3).
 ACTIVESAMPLING_VS_RATIO = 0.5            # explore fraction rho (env: LASO_VS_RATIO)
@@ -255,6 +263,7 @@ def _deferral_policy_for_ablation(ablation_label: str) -> str:
 spark = None
 all_results = []
 results_dir = "./results/activeSampling_grid/"
+INCLUDE_NO_OPT = os.environ.get("LASO_INCLUDE_NO_OPT", "0").lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +303,7 @@ def _laso_env_overrides():
     global BUDGET_PCTS, QUERY_BUDGET_PCTS, KNN_K_VALUES, ACTIVESAMPLING_VS_RATIO
     global ABLATION_CONFIGS, EMBEDDING_MODEL
     global EMBEDDING_MODELS_MULTIMODAL, EMBEDDING_MODELS_TEXT, results_dir
+    global INCLUDE_NO_OPT, RANDOM_SEED
 
     def _num(tok):
         tok = str(tok).strip()
@@ -339,6 +349,14 @@ def _laso_env_overrides():
     v = os.environ.get("LASO_RESULTS_DIR")
     if v:
         results_dir = v if v.endswith("/") else v + "/"
+
+    v = os.environ.get("LASO_RANDOM_SEED")
+    if v:
+        RANDOM_SEED = int(v)
+
+    v = os.environ.get("LASO_INCLUDE_NO_OPT")
+    if v is not None:
+        INCLUDE_NO_OPT = v.lower() in {"1", "true", "yes", "on"}
 
 
 _laso_env_overrides()
@@ -1715,6 +1733,43 @@ def _phase_breakdown_summary(df: pd.DataFrame) -> pd.DataFrame:
     return agg.round(3)
 
 
+
+def maybe_append_no_opt_join(query_tag, left_df, right_df, prompt, exp_idx, id_expr,
+                             gt_path=None, scorer=None, embedding_model=None):
+    """Append the no-proxy baseline row when LASO_INCLUDE_NO_OPT is enabled."""
+    if not INCLUDE_NO_OPT:
+        return exp_idx
+    emb_model = embedding_model or EMBEDDING_MODEL
+    no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment(
+        query_tag, left_df, right_df, prompt, exp_idx,
+    )
+    no_opt_r = collect_result(
+        no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
+        "no_opt", 100, "n/a", "n/a", query_tag,
+        ablation_label="no_opt", scorer=scorer, embedding_model=emb_model,
+    )
+    all_results.append(no_opt_r)
+    return exp_idx + 1
+
+
+def maybe_append_no_opt_filter(query_tag, df, prompt, exp_idx, id_expr,
+                               gt_path=None, scorer=None, embedding_model=None):
+    """Append the no-proxy baseline row when LASO_INCLUDE_NO_OPT is enabled."""
+    if not INCLUDE_NO_OPT:
+        return exp_idx
+    emb_model = embedding_model or EMBEDDING_MODEL
+    no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
+        query_tag, df, prompt, exp_idx,
+    )
+    no_opt_r = collect_result(
+        no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
+        "no_opt", 100, "n/a", "n/a", query_tag,
+        ablation_label="no_opt", scorer=scorer, embedding_model=emb_model,
+    )
+    all_results.append(no_opt_r)
+    return exp_idx + 1
+
+
 def save_query_results(query_tag, rows):
     if not rows:
         print(f"[{query_tag}] no rows to save")
@@ -1827,9 +1882,7 @@ The second product description is:
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment("ecomm_q7", left_df, right_df, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start, "no_opt", 100, "n/a", "n/a", "ecomm_q7", ablation_label="no_opt", embedding_model=EMBEDDING_MODEL, scorer=ecomm_q7_scorer)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("ecomm_q7", left_df, right_df, prompt, exp_idx, id_expr, gt_path, scorer=ecomm_q7_scorer)
 
 
 # ---------------------------------------------------------------------------
@@ -1877,9 +1930,7 @@ Product description: {left_description_text}"""
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment("ecomm_q8", left_df, right_df, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start, "no_opt", 100, "n/a", "n/a", "ecomm_q8", ablation_label="no_opt", embedding_model=EMBEDDING_MODEL)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("ecomm_q8", left_df, right_df, prompt, exp_idx, id_expr, gt_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1942,9 +1993,7 @@ Right image: {image:right_image_filepath}"""
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment("ecomm_q9", left_df, right_df, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start, "no_opt", 100, "n/a", "n/a", "ecomm_q9", ablation_label="no_opt", embedding_model=EMBEDDING_MODEL)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("ecomm_q9", left_df, right_df, prompt, exp_idx, id_expr, gt_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1996,9 +2045,7 @@ The product has the following image {image:image_filepath} and textual descripti
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment("ecomm_q13", merged, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start, "no_opt", 100, "n/a", "n/a", "ecomm_q13", ablation_label="no_opt", embedding_model=EMBEDDING_MODEL)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_filter("ecomm_q13", merged, prompt, exp_idx, id_expr, gt_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2050,9 +2097,7 @@ Review 2: "{right_reviewText}" """
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment("movie_q5", left_df, right_df, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start, "no_opt", 100, "n/a", "n/a", "movie_q5", ablation_label="no_opt", scorer=scorer, embedding_model=EMBEDDING_MODEL)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("movie_q5", left_df, right_df, prompt, exp_idx, id_expr, gt_path, scorer=scorer)
 
 
 # ---------------------------------------------------------------------------
@@ -2095,9 +2140,7 @@ Review 2: "{reviewText_right}" """
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment("movie_q7", left_df, right_df, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start, "no_opt", 100, "n/a", "n/a", "movie_q7", ablation_label="no_opt", scorer=scorer, embedding_model=EMBEDDING_MODEL)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("movie_q7", left_df, right_df, prompt, exp_idx, id_expr, gt_path, scorer=scorer)
 
 
 # ---------------------------------------------------------------------------
@@ -2137,9 +2180,7 @@ Image: {image:image_filepath}"""
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment("mmqa_q2a", left_df, right_df, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, None, no_opt_start, "no_opt", 100, "n/a", "n/a", "mmqa_q2a", ablation_label="no_opt", scorer=_score_mmqa_q2a, embedding_model=EMBEDDING_MODEL)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("mmqa_q2a", left_df, right_df, prompt, exp_idx, id_expr, None, scorer=_score_mmqa_q2a)
 
 
 # ---------------------------------------------------------------------------
@@ -2184,9 +2225,7 @@ Determine for each airline if the airline's destination is in Europe and if the 
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment("mmqa_q7", left_df, right_df, prompt, exp_idx)
-    # no_opt_r = collect_result(no_opt_tag, no_opt_df, id_expr, None, no_opt_start, "no_opt", 100, "n/a", "n/a", "mmqa_q7", ablation_label="no_opt", scorer=_score_mmqa_q7, embedding_model=EMBEDDING_MODEL)
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("mmqa_q7", left_df, right_df, prompt, exp_idx, id_expr, None, scorer=_score_mmqa_q7)
 
 
 # ---------------------------------------------------------------------------
@@ -2408,16 +2447,7 @@ def run_cars_q3():
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
-    #     "cars_q3", merged, prompt, exp_idx,
-    # )
-    # no_opt_r = collect_result(
-    #     no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
-    #     "no_opt", 100, "n/a", "n/a",
-    #     "cars_q3", ablation_label="no_opt", scorer=_score_cars_q3,
-    #     embedding_model=EMBEDDING_MODEL,
-    # )
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_filter("cars_q3", merged, prompt, exp_idx, id_expr, gt_path, scorer=_score_cars_q3)
 
 
 # ---------------------------------------------------------------------------
@@ -2478,16 +2508,7 @@ def run_cars_q4():
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
-    #     "cars_q4", complaints_df, prompt, exp_idx,
-    # )
-    # no_opt_r = collect_result(
-    #     no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
-    #     "no_opt", 100, "n/a", "n/a",
-    #     "cars_q4", ablation_label="no_opt", scorer=_score_cars_q4,
-    #     embedding_model=EMBEDDING_MODEL,
-    # )
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_filter("cars_q4", complaints_df, prompt, exp_idx, id_expr, gt_path, scorer=_score_cars_q4)
 
 
 # ---------------------------------------------------------------------------
@@ -2639,16 +2660,7 @@ def run_cars_q8():
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
-    #     "cars_q8", merged, prompt, exp_idx,
-    # )
-    # no_opt_r = collect_result(
-    #     no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
-    #     "no_opt", 100, "n/a", "n/a",
-    #     "cars_q8", ablation_label="no_opt", scorer=_score_cars_q8,
-    #     embedding_model=EMBEDDING_MODEL,
-    # )
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_filter("cars_q8", merged, prompt, exp_idx, id_expr, gt_path, scorer=_score_cars_q8)
 
 
 # ---------------------------------------------------------------------------
@@ -2750,16 +2762,7 @@ Image: {image:left_image_filepath}"""
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment(
-    #     "ecomm_q6", images_df, categories_df, prompt, exp_idx,
-    # )
-    # no_opt_r = collect_result(
-    #     no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
-    #     "no_opt", 100, "n/a", "n/a",
-    #     "ecomm_q6", ablation_label="no_opt", scorer=scorer,
-    #     embedding_model=EMBEDDING_MODEL,
-    # )
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join("ecomm_q6", images_df, categories_df, prompt, exp_idx, id_expr, gt_path, scorer=scorer)
 
 
 # ---------------------------------------------------------------------------
@@ -2815,16 +2818,7 @@ def run_animals_q1():
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
-    #     "animals_q1", df, prompt, exp_idx,
-    # )
-    # no_opt_r = collect_result(
-    #     no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
-    #     "no_opt", 100, "n/a", "n/a",
-    #     "animals_q1", ablation_label="no_opt", scorer=_score_animals_q1,
-    #     embedding_model=EMBEDDING_MODEL,
-    # )
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_filter("animals_q1", df, prompt, exp_idx, id_expr, gt_path, scorer=_score_animals_q1)
 
 
 def run_animals_q3():
@@ -3047,8 +3041,8 @@ def run_company_q1():
         prompt=prompt,
     )
 
-LROBENCH_DATABASES_DIR = os.environ.get(
-    "LROBENCH_DATABASES_DIR", "./databases"
+LROBENCH_DATABASES_DIR = os.environ.setdefault(
+    "LROBENCH_DATABASES_DIR", f"{DATA_ROOT}/databases"
 )
 
 
@@ -3108,15 +3102,7 @@ def _run_match_join(query_tag, left_df, right_df, prompt, gt_path,
                         all_results.append(r)
                         exp_idx += 1
 
-    # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment(
-    #     query_tag, left_df, right_df, prompt, exp_idx,
-    # )
-    # no_opt_r = collect_result(
-    #     no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
-    #     "no_opt", 100, "n/a", "n/a", query_tag,
-    #     ablation_label="no_opt", embedding_model=EMBEDDING_MODEL,
-    # )
-    # all_results.append(no_opt_r)
+    exp_idx = maybe_append_no_opt_join(query_tag, left_df, right_df, prompt, exp_idx, id_expr, gt_path)
 
 
 def run_match102():
@@ -3637,6 +3623,11 @@ if __name__ == "__main__":
         print(f"EMBEDDING_MODELS_MULTIMODAL = {EMBEDDING_MODELS_MULTIMODAL}")
         print(f"EMBEDDING_MODELS_TEXT = {EMBEDDING_MODELS_TEXT}")
         print(f"MODEL (SEMBENCH_MODEL) = {MODEL}")
+        print(f"DATA_ROOT      = {DATA_ROOT}")
+        print(f"LROBENCH_DATABASES_DIR = {LROBENCH_DATABASES_DIR}")
+        print(f"JAR_PATH       = {JAR_PATH}")
+        print(f"RANDOM_SEED    = {RANDOM_SEED}")
+        print(f"INCLUDE_NO_OPT = {INCLUDE_NO_OPT}")
         print(f"results_dir    = {results_dir}")
         sys.exit(0)
 
@@ -3661,7 +3652,7 @@ if __name__ == "__main__":
     pd.set_option("display.float_format", "{:.4f}".format)
     print(summary_df.to_string(index=False))
 
-    _run_tag = "_".join(sorted(queries)) if len(queries) <= 3 else filter_arg
+    _run_tag = "_".join(sorted(queries)) if len(queries) <= 3 else "selected_queries"
     _run_tag = _run_tag.replace("/", "_").replace(" ", "_")
     summary_path = f"{results_dir}{_run_tag}_grid_summary.csv"
     summary_df.to_csv(summary_path, index=False)

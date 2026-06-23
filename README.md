@@ -197,7 +197,7 @@ labels returned by the expert MLLM during sampling and rollback.
 ---
 
 
-### R1. Hardware & software environment
+### Hardware & software environment
 
 - **OS & Software:** Linux (tested on Ubuntu). **Python:** 3.10–3.12. **Java:** 8 or 11 (for PySpark 3.3).  CUDA 12.4 toolkit, vLLM 0.20.0, and transformers 4.57.0
 - **GPU** Two NVIDIA RTX PRO 6000 Blackwell Max-Q GPUs
@@ -205,11 +205,11 @@ labels returned by the expert MLLM during sampling and rollback.
 - An **OpenAI-compatible LLM endpoint** (any server works; we use vLLM). Default endpoint
   `http://localhost:8000/v1`.
 
-### R2. Installation *(ARI §A: Source code & packages)*
+### Installation
 
 ```bash
 # Use this to create the deploy conda env
-bash /localhome/hza214/LASO/create_deploy_env.sh
+bash /LASO/create_deploy_env.sh
 
 # get into the deploy conda env
 conda activate deoloy
@@ -245,6 +245,7 @@ vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --enable-prefix-caching \
   --allowed-local-media-path $LASO_DATA_ROOT/SemBench \
   > vllm_server_30b.log 2>&1 &
+
 ```
 
 The run scripts call `http://localhost:8000/v1/chat/completions` and snapshot vLLM's
@@ -253,11 +254,8 @@ endpoint with `VLLM_METRICS_URL` if you serve elsewhere.
 
 
 
-bash /localhome/hza214/LASO/create_run_env.sh
-```
 
-
-### R4. Data and models *(ARI §B: Datasets)*
+### Data and models
 
 #### Download links
 
@@ -303,14 +301,6 @@ inputs as follows and point the variable at the root:
 export LASO_DATA_ROOT=/path/to/data_root
 ```
 
-```
-$LASO_DATA_ROOT/
-├── SemBench/files/<scenario>/          # scenario ∈ {cars, ecomm, movie, mmqa, animals, ...}
-│   ├── data/sf_<scale>/                #   materialized tables (per scale factor)
-│   └── raw_results/ground_truth/Q*.csv #   human reference labels (evaluation only)
-├── siglip-base-patch16-224/            # embedding model (HuggingFace snapshot)
-└── AI_UDF_private/.../spark-semantic-plugin_...jar   # Spark semantic-operator JAR
-```
 
 - **SemBench** provides the cars / ecomm / movie / mmqa / animals scenarios.
 - **LRO-Bench** provides the `LRO_match*` join queries; `run_lrobench_select127_grid.py`
@@ -388,6 +378,13 @@ Run them directly:
 
 ```bash
 export LASO_DATA_ROOT=
+
+# Use this to create the run conda env
+bash /LASO/create_run_env.sh
+
+# get into the deploy conda env
+conda activate run
+
 bash experiments/01_main_system_comparison.sh      # Table 2, Fig 1–2
 bash experiments/02_sampling_policy_ablation.sh     # Table 3
 bash experiments/05_hyperparameter_sensitivity.sh   # Fig 3
