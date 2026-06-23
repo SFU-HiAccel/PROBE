@@ -205,11 +205,11 @@ labels returned by the expert MLLM during sampling and rollback.
 ### Installation
 
 ```bash
-# Use this to create the deploy conda env
-bash /LASO/create_deploy_env.sh
+# Use this to create the deploy conda env (run from the repo root)
+bash create_deploy_env.sh
 
 # get into the deploy conda env
-conda activate deoloy
+conda activate deploy
 
 export HF_HOME=$HOME/hf-cache
 export VLLM_CACHE_DIR=$HOME/vllm-cache
@@ -240,7 +240,7 @@ vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --max-num-seqs 512 \
   --max-num-batched-tokens 32768 \
   --enable-prefix-caching \
-  --allowed-local-media-path /local-scratch/localhome/hza214/SemBench \
+  --allowed-local-media-path "$LASO_DATA_ROOT/SemBench" \
   > vllm_server_30b.log 2>&1 &
 
 ```
@@ -283,10 +283,6 @@ LASO's four join queries (`LRO_match{113,121,202,305}`) read only the `santos` t
 clone the repo and place its `databases/` tree where `$LROBENCH_DATABASES_DIR` points
 (default `$LASO_DATA_ROOT/databases/`).
 
-> **Licenses.** SemBench and LRO-Bench retain their upstream licenses (see each
-> repository); the underlying media inherit their original dataset licenses (e.g. the
-> SemBench scenario sources on Kaggle / Google Drive, and the public-sector `santos`
-> tables). LASO's own code is MIT.
 
 #### Directory layout
 
@@ -307,46 +303,6 @@ export LASO_DATA_ROOT=/path/to/data_root
 - **Embedding model:** any SigLIP-class encoder; the default is `siglip-base-patch16-224`.
   Override with the `EMBEDDING_MODEL` constant at the top of the run scripts.
 
-> If your directory layout differs, either symlink it under `$LASO_DATA_ROOT` with the
-> structure above, or edit the per-scenario `data_dir` / `gt_path` defaults near the top
-> of `run.py`.
-
-#### Downloading the benchmark data
-
-Download each benchmark from its canonical source (full link table in "Download links"
-above), then materialize it with its own tooling (vendored under `third_party/`, see
-"Reproducing the Baselines" below) and point `$LASO_DATA_ROOT` at the result.
-
-**SemBench** — [github.com/SemBench/SemBench](https://github.com/SemBench/SemBench/)
-([arXiv:2511.01716](https://arxiv.org/abs/2511.01716)). The cars / ecomm / movie / mmqa /
-animals scenarios **auto-download from Google Drive and build** their multimodal databases
-on the first run of the harness (per-scenario Google Drive file IDs listed under "Download
-links" above) — no manual download step:
-
-```bash
-cd third_party/sembench
-pip install -r requirements.txt            # into the `sembench` env
-# Downloads + materializes data into third_party/sembench/files/<scenario>/data/sf_<sf>/
-python3 src/run.py --systems lotus --use-cases cars ecomm mmqa animals movie \
-        --scale-factor <sf>
-# Re-use the materialized data on later runs (skip re-download/build):
-python3 src/run.py --systems lotus --use-cases cars --queries 3 --skip-setup ...
-```
-
-Each scenario has its own scale-factor range; pick the `--scale-factor` whose
-candidate-set size matches the workload table above (e.g. the full `cars` table is
-~157K rows, `mmqa_q7` ~230K). The downloaded media live under
-`third_party/sembench/files/*/data/` and are git-ignored — only query definitions
-and `raw_results/ground_truth/` human labels are vendored.
-
-**LRO-Bench** (the `LRO_match{113,121,202,305}` join queries) is built from the
-LROBench / BIRD relational databases. Clone the database CSVs from the public LROBench
-repository ([github.com/LROBench/LROBench](https://github.com/LROBench/LROBench/),
-[arXiv:2603.02537](https://arxiv.org/abs/2603.02537)) and place them under
-`$LASO_DATA_ROOT/databases/` (the tree BARGAIN's grid reads via the
-`LROBENCH_DATABASES_DIR` environment variable, and LASO's harness reads for the
-`LRO_match*` queries). The four paper queries draw from the `santos`,
-`restaurants2`, and schools tables.
 
 ### Run the experiments
 
@@ -373,10 +329,10 @@ Run them directly:
 ```bash
 export LASO_DATA_ROOT=
 
-# Use this to create the run conda env
-bash /LASO/create_run_env.sh
+# Use this to create the run conda env (run from the repo root)
+bash create_run_env.sh
 
-# get into the deploy conda env
+# get into the run conda env
 conda activate run
 
 bash experiments/01_main_system_comparison.sh      # Table 2, Fig 1–2
@@ -434,19 +390,26 @@ describing exactly what it draws and which sheet it reads:
 
 `paper_figures/plot_style.py` is the shared palette/styling helper (not a figure
 generator). The hand-drawn schematic figures in the paper (workflow, label-propagation
-pipeline, threshold contraction, teaser) have no generator script — they are authored
-diagrams.
+pipeline, threshold contraction) have no generator script — they are authored diagrams.
 
-### Notes & caveats
+#### Similarity-distribution figures (Fig 1, Fig 4, Fig 11)
 
-- `sembench_q{5,6,7}_proxy_model.py` import the operators as the `omnimcp` package
-  (`omnimcp.server.*`); the same modules are vendored at the repo root
-  (`proxy_model.py`, `sem_ops_register.py`). Install that package or adjust the imports to
-  the local modules to run those per-query drivers.
-- `cars_Q3.py` additionally requires the third-party `lotus` library.
-- See `CHANGELOG.md` for the most recent changes to the experiment harness.
+`paper_figures/viz_similarity_distribution.py` regenerates the data-driven
+similarity-distribution figures. Unlike the scripts above, it does **not** read
+`plotdata.xlsx` — it loads the actual benchmark data, computes SigLIP embeddings, and
+plots the per-row similarity/label distributions, so it needs the **`run` env**, the
+dataset under `$LASO_DATA_ROOT`, the embedding model, and Spark (the repo's plugin JAR is
+auto-located; no LLM endpoint required). Outputs land in `./results/similarity_dist/`.
 
----
+| Paper figure | LaTeX label | Command (from repo root) | Output |
+|--------------|-------------|--------------------------|--------|
+| **Figure 1** — uniform vs top-K sampling miss the rare positives | `fig:sampler-compare` | `python paper_figures/viz_similarity_distribution.py sampling_baseline:ecomm_q13` | `ecomm_q13_sampling_baseline.pdf` → `sampling_baseline.pdf` |
+| **Figure 4** — active sampler sharpening the threshold across phases | `fig:active-sampling-ecomm` | `python paper_figures/viz_similarity_distribution.py direct_evolution_scatter:ecomm_q13` | `ecomm_q13_direct_phase_scatter.pdf` → `sampling_active.pdf` |
+| **Figure 11** — low-selectivity multimodal distribution | `fig:lowsel-multimodal` | `python paper_figures/viz_similarity_distribution.py ecomm_q6` | `ecomm_q6_sim_dist.pdf` → `ecomm_q6.pdf` |
+
+Figures 1 and 4 can be produced together from the same data/jitter with
+`python paper_figures/viz_similarity_distribution.py combined:ecomm_q13`.
+
 
 
 ## Reproducing the Baselines
@@ -470,7 +433,7 @@ and calls `http://localhost:8000/v1`; ThalamusDB selects a model config by the f
 ```bash
 cd third_party/sembench
 conda activate run
-export LASO_DATA_PATH=/localhome/hza214/SemBench/files
+export LASO_DATA_PATH=/path/to/SemBench/files
 
 
 # Lotus — pass the BARE model name (runner prepends hosted_vllm/)
@@ -496,7 +459,7 @@ benchmark data via the environment, then run a tag or group:
 cd third_party/bargain
 pip install -e .                                   # or: pip install -r ../sembench/requirements.txt
 export LASO_DATA_ROOT=/path/to/data_root
-export LROBENCH_DATABASES_DIR=/localhome/hza214/LLMSQL/databases
+export LROBENCH_DATABASES_DIR=/path/to/databases
 python examples/run_bargain_galaxy_grid.py all \
   --proxy-model  "Qwen/Qwen3-VL-2B-Instruct"     --proxy-url  http://localhost:8001/v1 \
   --oracle-model "Qwen/Qwen3-VL-30B-A3B-Instruct" --oracle-url http://localhost:8000/v1
