@@ -1310,6 +1310,10 @@ def _activeSampling_blend_lambda(
         return _ACTIVESAMPLING_LAMBDA_CAP if phase_idx >= n_phases // 2 else 0.0
     if schedule == "label_count":
         return min(_ACTIVESAMPLING_LAMBDA_CAP, max(0.0, (n_lab - 30) / 200.0))
+    # "linear" (default) and any unrecognized schedule: paper Alg. 1's ramp
+    # lambda_t = (t-1)/(T-1), increasing linearly 0 -> 1 across the T rounds.
+    # phase_idx is 0-based, so the first non-cold round contributes
+    # proportionally and the final round reaches 1.0.
     denom = max(1, n_phases - 1)
     return min(_ACTIVESAMPLING_LAMBDA_CAP, phase_idx / denom)
 

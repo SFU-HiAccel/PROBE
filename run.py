@@ -183,7 +183,7 @@ RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "43"))
 # Active-learning sampler config (paper §3).
 ACTIVESAMPLING_VS_RATIO = 0.5            # explore fraction rho (env: LASO_VS_RATIO)
 ACTIVESAMPLING_N_PHASES = 5             # active-learning rounds T
-ACTIVESAMPLING_LR_BLEND_SCHEDULE = "linear"  # lambda_t ramp across rounds
+ACTIVESAMPLING_LR_BLEND_SCHEDULE = "linear"  # lambda_t = (t-1)/(T-1), linear 0->1 ramp across rounds (paper Alg. 1)
 ACTIVESAMPLING_COLD_START_PHASES = 1    # leading SigLIP-only (lambda=0) phases
 
 enable_defer = True
