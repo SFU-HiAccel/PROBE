@@ -532,15 +532,10 @@ benchmark data via the environment, then run a tag or group:
 cd third_party/bargain
 pip install -e .                                   # or: pip install -r ../sembench/requirements.txt
 export LASO_DATA_ROOT=/path/to/data_root
-export SEMBENCH_ROOT=$LASO_DATA_ROOT/SemBench/files          # or ../sembench/files
-export LROBENCH_DATABASES_DIR=$LASO_DATA_ROOT/databases
-
-# A group (ecomm | mmqa | cars | animals | movie | match | all) or a single tag (cars_q3, match113)
-python3 examples/run_bargain_galaxy_grid.py ecomm \
-        --proxy-model Qwen/Qwen3-VL-2B-Instruct \
-        --oracle-model Qwen/Qwen3-VL-30B-A3B-Instruct \
-        --vllm-url http://localhost:8000/v1 \
-        --budget-pcts 1 5 10 --target 0.9 --delta 0.1
+export LROBENCH_DATABASES_DIR=/localhome/hza214/LLMSQL/databases
+python examples/run_bargain_galaxy_grid.py all \
+  --proxy-model  "Qwen/Qwen3-VL-2B-Instruct"     --proxy-url  http://localhost:8001/v1 \
+  --oracle-model "Qwen/Qwen3-VL-30B-A3B-Instruct" --oracle-url http://localhost:8000/v1
 ```
 
 Serve the proxy and oracle on separate endpoints with `--proxy-url` / `--oracle-url`
