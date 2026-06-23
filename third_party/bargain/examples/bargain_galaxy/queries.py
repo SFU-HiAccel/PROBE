@@ -34,8 +34,10 @@ from bargain_galaxy.vllm_models import BargainRecord
 # Resolved from the environment so the artifact carries no machine-specific paths.
 # SEMBENCH_ROOT      -> the vendored SemBench data root, e.g. third_party/sembench/files
 # LROBENCH_DATABASES_DIR -> the LROBench/BIRD database CSV root (see README "Datasets")
-SEMBENCH_ROOT = os.environ.get(
-    "SEMBENCH_ROOT", os.path.join(os.environ.get("LLMSQL_DATA_ROOT", "."), "SemBench", "files"),
+SEMBENCH_ROOT = (
+    os.environ.get("SEMBENCH_ROOT")
+    or os.environ.get("LASO_DATA_PATH")  # the SemBench "files" dir, e.g. /localhome/hza214/SemBench/files
+    or os.path.join(os.environ.get("LLMSQL_DATA_ROOT", "."), "SemBench", "files")
 )
 LROBENCH_DATABASES_DIR = os.environ.get(
     "LROBENCH_DATABASES_DIR", os.path.join(os.environ.get("LLMSQL_DATA_ROOT", "."), "databases"),

@@ -16,6 +16,7 @@ from __future__ import annotations
 import abc
 import dataclasses
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 import traceback
@@ -116,7 +117,11 @@ class GenericEvaluator(abc.ABC):
 
     # Generic workflow – inherited by concrete evaluators
     def __init__(self, use_case: str, scale_factor: int) -> None:
-        self._root = Path(__file__).resolve().parents[2] / "files" / use_case
+        # Read results/ground-truth from the external SemBench data dir if assigned
+        # (LASO_DATA_PATH / SEMBENCH_FILES_DIR), matching where the runner wrote them.
+        _files_root = os.environ.get("LASO_DATA_PATH") or os.environ.get("SEMBENCH_FILES_DIR")
+        self._root = (Path(_files_root) / use_case) if _files_root \
+            else (Path(__file__).resolve().parents[2] / "files" / use_case)
         self._results_path = self._root / "raw_results"
         self._metrics_path = self._root / "metrics"
         self.scale_factor = scale_factor

@@ -66,7 +66,13 @@ class GenericRunner(ABC):
 
         # Set up paths
         self.base_path = Path(__file__).resolve().parents[2]
-        self.files_path = self.base_path / "files" / use_case
+        # Read SemBench data from an external location if assigned, so existing
+        # data is used in place instead of re-downloading into the repo. Set
+        # LASO_DATA_PATH (or SEMBENCH_FILES_DIR) to your SemBench "files" dir
+        # (e.g. /localhome/hza214/SemBench/files).
+        _files_root = os.environ.get("LASO_DATA_PATH") or os.environ.get("SEMBENCH_FILES_DIR")
+        self.files_path = (Path(_files_root) / use_case) if _files_root \
+            else (self.base_path / "files" / use_case)
         self.data_path = self.files_path / "data" / f"sf_{scale_factor}"
         self.query_path = self.files_path / "query"
         self.results_path = self.files_path / "raw_results" / self.system_name

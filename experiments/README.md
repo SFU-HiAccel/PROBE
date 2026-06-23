@@ -19,11 +19,11 @@ LASO_DRYRUN=1 bash experiments/01_main_system_comparison.sh
 
 | Script | Paper artifact | What it varies |
 |--------|----------------|----------------|
-| `01_main_system_comparison.sh` | Table 2, Fig 1–2 | LASO with router vs without, vs no-proxy (size-aware budget) |
+| `01_main_system_comparison.sh` | Table 2, Fig 1–2 | LASO (router/no-router) + UQE via run.py + Lotus/ThalamusDB via SemBench; shared 1%/10% per-query budget |
 | `02_sampling_policy_ablation.sh` | Table 3 | sampler: uniform / top-K / UQE-active / LASO-active (LP off) |
 | `03_label_propagation_ablation.sh` | Table 4 | sampler × label-propagation on/off |
 | `04_online_router_ablation.sh` | Table 5 | online router off vs on |
-| `05_hyperparameter_sensitivity.sh` | Fig 3 | k ∈ {10,30,50}, ρ ∈ {0.3,0.5,0.7}, budget sweep |
+| `05_hyperparameter_sensitivity.sh` | Fig 3 | k ∈ {10,30,50}, ρ ∈ {0.3,0.5,0.7}; per-query budget axis (mmqa_q7/ecomm_q8/ecomm_q9: 0.1–1.0%, match305/animals_q1: 1–10%) |
 | `06_embedding_model_robustness.sh` | Table 6 | embedder: miniLM / CLIP-b / CLIP-l / SigLIP / GME |
 | `07_mllm_generalization.sh` | Fig 4 | expert MLLM: Qwen3-VL-30B / Qwen3.6-35B / InternVL3.5-30B / GLM-4.5V |
 | `08_time_breakdown.sh` | Fig 5–6 | per-stage latency decomposition (reuses 01's config) |
@@ -53,8 +53,12 @@ python ../viz_similarity_distribution.py
 - **Embedding models:** under `$LLMSQL_DATA_ROOT` (SigLIP by default; experiment 06 also
   needs CLIP-base/large, GME, miniLM).
 - **Expert MLLM:** an OpenAI-compatible server at `:8000` (experiment 07 serves four in turn).
-- **External baselines** (Lotus, ThalamusDB, UQE, BARGAIN) are **out of scope** — they live
-  in their own repositories. Experiments 01/07 produce only the LASO + no-proxy rows.
+- **Baselines.** Experiment 01 now runs the full comparison: UQE rides the same `run.py`
+  budget machinery as LASO, and Lotus/ThalamusDB run through the vendored SemBench harness
+  (`third_party/sembench`, needs the `sembench` env — point at it with `SEMBENCH_PY`; covers
+  the 10 SemBench queries only, the 4 LRO joins are unsupported there). BARGAIN still runs
+  from its own repo (`third_party/bargain`) with the matching `--budget-pcts`; see
+  `../README.md` "Reproducing the Baselines".
 
 ## How configuration works
 

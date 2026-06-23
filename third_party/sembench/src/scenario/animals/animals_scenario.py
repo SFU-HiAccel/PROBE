@@ -5,8 +5,12 @@ import glob
 from scenario.animals.preparation.generate_data import download_from_google_drive
 
 
-ANIMALS_FILES_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "files", "animals")
+# Use an external SemBench data dir if assigned (LASO_DATA_PATH / SEMBENCH_FILES_DIR),
+# else the vendored ../../../files/animals. Lets the harness read existing data in place.
+_FILES_ROOT = os.environ.get("LASO_DATA_PATH") or os.environ.get("SEMBENCH_FILES_DIR")
+ANIMALS_FILES_DIR = (
+    os.path.abspath(os.path.join(_FILES_ROOT, "animals")) if _FILES_ROOT
+    else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "files", "animals"))
 )
 
 

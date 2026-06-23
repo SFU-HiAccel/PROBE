@@ -14,8 +14,14 @@ import pyarrow.parquet as pq
 
 def download_from_google_drive():
     """Download ecomm.tar.gz from Google Drive and extract it."""
-    base_dir = Path(__file__).resolve().parents[3]
-    source_data_dir = base_dir / "files" / "ecomm" / "source_data"
+    # Honor an external SemBench data dir so the existing download is reused
+    # instead of fetched again (LASO_DATA_PATH / SEMBENCH_FILES_DIR).
+    _files_root = os.environ.get("LASO_DATA_PATH") or os.environ.get("SEMBENCH_FILES_DIR")
+    if _files_root:
+        source_data_dir = Path(_files_root) / "ecomm" / "source_data"
+    else:
+        base_dir = Path(__file__).resolve().parents[3]
+        source_data_dir = base_dir / "files" / "ecomm" / "source_data"
     source_data_dir.mkdir(parents=True, exist_ok=True)
 
     # The fashion-dataset folder should be in source_data after extraction

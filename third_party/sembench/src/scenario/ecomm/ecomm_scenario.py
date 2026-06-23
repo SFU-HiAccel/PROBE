@@ -7,8 +7,12 @@ import tomli
 import duckdb
 
 
-ECOMM_FILES_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "files", "ecomm")
+# Use an external SemBench data dir if assigned (LASO_DATA_PATH / SEMBENCH_FILES_DIR),
+# else the vendored ../../../files/ecomm. Lets the harness read existing data in place.
+_FILES_ROOT = os.environ.get("LASO_DATA_PATH") or os.environ.get("SEMBENCH_FILES_DIR")
+ECOMM_FILES_DIR = (
+    os.path.abspath(os.path.join(_FILES_ROOT, "ecomm")) if _FILES_ROOT
+    else os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "files", "ecomm"))
 )
 
 
