@@ -1824,36 +1824,32 @@ def _activeSampling_version_space_reduction(
     labeled_mask[samp_positions] = True
     w[samp_positions] = np.where(query_labels_arr == 1, 1.0, -1.0)
 
-    cur_diam = int(np.count_nonzero(~labeled_mask[I : J + 1]))
-    if cur_diam > 0:
+    # --- Interval contraction (paper Alg. 2, lines 5-9) ---
+    # Geometric base is the RAW interval width (J - I); shrink factor
+    # c = (J - I)^(1/m) with m the remaining rounds, giving target width
+    # h = (J - I) / c. We then contract to the width-h sub-interval that
+    # minimizes the paper's max-endpoint threshold loss:
+    #     (I, J) <- argmin_{i,j in [I,J], j-i=h} max{ L(i), L(j) },
+    # where L(s) = |{matches <= s}| + |{non-matches > s}| is the empirical
+    # threshold loss. We recover L from the signed labels w via the exact
+    # affine identity L(s) = (sum|w| - acc(s)) / 2, where
+    # acc(s) = sum_{k<s} w_k - sum_{k>=s} w_k (so argmin L == argmax acc).
+    width = J - I
+    if width > 1:
         remaining_rounds = B2 // B1 if B1 > 0 else 1
         if remaining_rounds <= 1:
-            c2 = 1.0
+            c2 = float(width)
         else:
-            c2 = cur_diam ** (1.0 / remaining_rounds)
-        target = max(1, math.ceil(cur_diam / c2))
-        diam = cur_diam
-        accs = _activeSampling_get_acc(w)
-        while diam > target:
-            if accs[I] < accs[J]:
-                if not labeled_mask[I]:
-                    diam -= 1
-                I += 1
-            elif accs[I] > accs[J]:
-                if not labeled_mask[J]:
-                    diam -= 1
-                J -= 1
-            else:
-                if np.random.randint(0, 2) == 0:
-                    if not labeled_mask[I]:
-                        diam -= 1
-                    I += 1
-                else:
-                    if not labeled_mask[J]:
-                        diam -= 1
-                    J -= 1
-            if I >= J:
-                break
+            c2 = float(width) ** (1.0 / remaining_rounds)
+        h = max(1, int(round(width / c2))) if c2 > 0 else 1
+        if h < width:
+            total_labeled = float(np.sum(np.abs(w)))
+            loss = (total_labeled - _activeSampling_get_acc(w)) / 2.0  # L(s), 0<=s<=n
+            # max{L(i), L(j)} over every width-h sub-interval [i, i+h] of [I, J]
+            left = loss[I : J - h + 1]
+            right = loss[I + h : J + 1]
+            best_off = int(np.argmin(np.maximum(left, right)))
+            I, J = I + best_off, I + best_off + h
 
     sub_labeled, w, sub_spend = _activeSampling_version_space_reduction(
         sorted_indices, texts, label_fn, labeled_mask, w,
@@ -2670,10 +2666,15 @@ def _diffuse_with_early_exit(
     num_iter: int,
     tol: float,
     patience: int,
+    clip01: bool = False,
 ) -> Tuple[np.ndarray, int]:
     """Iterative diffusion on normalized graph with early exit.
 
     Updates: x_new = (1 - alpha) * x_init + alpha * S @ x
+    When `clip01` is set, the affine update is clipped to [0, 1] every
+    iteration BEFORE pinning (paper Alg. 3, line 53: the homogeneity-propagation
+    step wraps the whole update in clip(.,0,1)). Bias diffusion (Phase A) leaves
+    `clip01=False` because its residual update is unclipped in the paper.
     Pins `pinned_indices` to `pinned_values` after each update.
     Exits when max |x_new - x| < tol for `patience` consecutive iterations.
 
@@ -2684,6 +2685,8 @@ def _diffuse_with_early_exit(
     no_improvement = 0
     for i in range(num_iter):
         x_new = (1.0 - alpha) * x_init + alpha * (S @ x)
+        if clip01:
+            np.clip(x_new, 0.0, 1.0, out=x_new)
         if len(pinned_indices) > 0:
             x_new[pinned_indices] = pinned_values
         delta = float(np.max(np.abs(x_new - x))) if len(x) > 0 else 0.0
@@ -2842,6 +2845,7 @@ def predict_with_score_refinement(
     z_smooth, homogeneity_propagation_iters = _diffuse_with_early_exit(
         S, G_init, pinned_idx, pinned_labels,
         alpha=beta, num_iter=num_iter, tol=tol, patience=patience,
+        clip01=True,  # paper Alg. 3 line 53: clip((1-beta)G + beta*S*z, 0, 1) each iter
     )
     prof["homogeneity_propagation_time"] = time.time() - t0
     prof["homogeneity_propagation_iters"] = homogeneity_propagation_iters

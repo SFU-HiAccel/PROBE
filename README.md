@@ -222,7 +222,7 @@ export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export CMAKE_ARGS="-Dprotobuf_BUILD_TESTS=OFF"
 export CFLAGS="$CFLAGS -Wno-error=incompatible-pointer-types -Wno-incompatible-pointer-types"
-
+export LASO_DATA_ROOT=/localhome/hza214
 vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --enable-mm-embeds \
   --tensor-parallel-size 2 \
