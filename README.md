@@ -23,12 +23,6 @@ from embedding similarity:
 3. **An online model router** decides, per row, whether to trust the proxy or fall back
    to the expert MLLM.
 
-On **SemBench** and **LRO-Bench**, LASO matches the mean F₁ of the SparkSQL AI UDF
-(no-opt) baseline while delivering up to **212× speedup** (9.5× geometric mean) with a
-**16.34× reduction in token usage**.
-
-> LASO is the only system among Lotus, ThalamusDB, and UQE that preserves the no-proxy
-> baseline F₁ while also cutting cost.
 
 ---
 
@@ -367,69 +361,6 @@ huggingface-cli snapshot-download Alibaba-NLP/gme-Qwen2-VL-7B-Instruct \
   --local-dir-use-symlinks False
 ```
 
-A compact bulk-download form is useful on fresh machines:
-
-```bash
-export LASO_MODEL_ROOT=/localhome/hza214/models/laso
-mkdir -p "$LASO_MODEL_ROOT"/{mllm,embedding}
-
-declare -A MLLM_MODELS=(
-  [Qwen3-VL-30B-A3B-Instruct]=Qwen/Qwen3-VL-30B-A3B-Instruct
-  [Qwen3.6-35B-A3B]=Qwen/Qwen3.6-35B-A3B
-  [InternVL3_5-30B-A3B]=OpenGVLab/InternVL3_5-30B-A3B
-  [GLM-4.5V]=zai-org/GLM-4.5V
-)
-
-declare -A EMBEDDING_MODELS=(
-  [all-MiniLM-L6-v2]=sentence-transformers/all-MiniLM-L6-v2
-  [clip-vit-base-patch32]=openai/clip-vit-base-patch32
-  [clip-vit-large-patch14]=openai/clip-vit-large-patch14
-  [siglip-base-patch16-224]=google/siglip-base-patch16-224
-  [gme-Qwen2-VL-7B-Instruct]=Alibaba-NLP/gme-Qwen2-VL-7B-Instruct
-)
-
-for name in "${!MLLM_MODELS[@]}"; do
-  huggingface-cli snapshot-download "${MLLM_MODELS[$name]}" \
-    --local-dir "$LASO_MODEL_ROOT/mllm/$name" \
-    --local-dir-use-symlinks False
-done
-
-for name in "${!EMBEDDING_MODELS[@]}"; do
-  huggingface-cli snapshot-download "${EMBEDDING_MODELS[$name]}" \
-    --local-dir "$LASO_MODEL_ROOT/embedding/$name" \
-    --local-dir-use-symlinks False
-done
-```
-
-To serve a local checkpoint with vLLM, pass the local directory instead of the
-remote Hugging Face id:
-
-```bash
-vllm serve "$LASO_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct" \
-  --served-model-name Qwen3-VL-30B-A3B-Instruct \
-  --enable-mm-embeds \
-  --tensor-parallel-size 2 \
-  --max-model-len 131072 \
-  --port 8000
-```
-
-For embedding loaders, pass the downloaded directory as the model path. GME
-requires `trust_remote_code=True` in the common SentenceTransformers / Transformers
-loaders.
-
-```python
-from sentence_transformers import SentenceTransformer
-
-minilm = SentenceTransformer(
-    "/localhome/hza214/models/laso/embedding/all-MiniLM-L6-v2"
-)
-
-gme = SentenceTransformer(
-    "/localhome/hza214/models/laso/embedding/gme-Qwen2-VL-7B-Instruct",
-    trust_remote_code=True,
-)
-```
-
 #### Directory layout
 
 All data/model locations are resolved from the environment variable
@@ -444,11 +375,6 @@ export LASO_DATA_ROOT=/path/to/data_root
 - **SemBench** provides the cars / ecomm / movie / mmqa / animals scenarios.
 - **LRO-Bench** provides the `LRO_match*` join queries; `run_lrobench_select127_grid.py`
   reads its tables from `$LASO_DATA_ROOT` as well.
-- **Pairwise-join ground truth** for the company/flickr/roxford/veri scenarios can be
-  regenerated with the `dataset/*_groundtruth.py` scripts (each takes `--data_dir`).
-- **Embedding model:** any SigLIP-class encoder; the default is `siglip-base-patch16-224`.
-  Override with the `EMBEDDING_MODEL` constant at the top of the run scripts.
-
 
 ### Run the experiments
 
