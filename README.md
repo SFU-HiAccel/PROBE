@@ -284,6 +284,152 @@ clone the repo and place its `databases/` tree where `$LROBENCH_DATABASES_DIR` p
 (default `$LASO_DATA_ROOT/databases/`).
 
 
+#### Model checkpoint links
+
+The paper evaluates four expert MLLMs and five embedding models. Use the Hugging
+Face repository ids below when serving models directly, or download them into a
+local checkpoint directory as shown in the next subsection.
+
+Expert MLLMs:
+
+| Paper name | Hugging Face model id | Link | Suggested local directory |
+|---|---|---|---|
+| Qwen3-VL-30B-A3B-Instruct | `Qwen/Qwen3-VL-30B-A3B-Instruct` | <https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct> | `$LASO_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct` |
+| Qwen3.6-35B-A3B | `Qwen/Qwen3.6-35B-A3B` | <https://huggingface.co/Qwen/Qwen3.6-35B-A3B> | `$LASO_MODEL_ROOT/mllm/Qwen3.6-35B-A3B` |
+| InternVL3.5-30B-A3B | `OpenGVLab/InternVL3_5-30B-A3B` | <https://huggingface.co/OpenGVLab/InternVL3_5-30B-A3B> | `$LASO_MODEL_ROOT/mllm/InternVL3_5-30B-A3B` |
+| GLM-4.5V | `zai-org/GLM-4.5V` | <https://huggingface.co/zai-org/GLM-4.5V> | `$LASO_MODEL_ROOT/mllm/GLM-4.5V` |
+
+Embedding models:
+
+| Paper name | Hugging Face model id | Link | Suggested local directory |
+|---|---|---|---|
+| miniLM | `sentence-transformers/all-MiniLM-L6-v2` | <https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2> | `$LASO_MODEL_ROOT/embedding/all-MiniLM-L6-v2` |
+| clip-base | `openai/clip-vit-base-patch32` | <https://huggingface.co/openai/clip-vit-base-patch32> | `$LASO_MODEL_ROOT/embedding/clip-vit-base-patch32` |
+| clip-large | `openai/clip-vit-large-patch14` | <https://huggingface.co/openai/clip-vit-large-patch14> | `$LASO_MODEL_ROOT/embedding/clip-vit-large-patch14` |
+| siglip | `google/siglip-base-patch16-224` | <https://huggingface.co/google/siglip-base-patch16-224> | `$LASO_MODEL_ROOT/embedding/siglip-base-patch16-224` |
+| gme | `Alibaba-NLP/gme-Qwen2-VL-7B-Instruct` | <https://huggingface.co/Alibaba-NLP/gme-Qwen2-VL-7B-Instruct> | `$LASO_MODEL_ROOT/embedding/gme-Qwen2-VL-7B-Instruct` |
+
+#### Download model checkpoints locally
+
+Choose a local model root. The examples below keep model weights separate from
+`$LASO_DATA_ROOT`, but you can place them under the same storage volume if that is
+more convenient.
+
+```bash
+export LASO_MODEL_ROOT=/localhome/hza214/models/laso
+mkdir -p "$LASO_MODEL_ROOT"/{mllm,embedding}
+
+python3 -m pip install -U "huggingface_hub[cli]"
+huggingface-cli login   # needed for gated models or accepted-license downloads
+```
+
+Download the expert MLLMs:
+
+```bash
+huggingface-cli snapshot-download Qwen/Qwen3-VL-30B-A3B-Instruct \
+  --local-dir "$LASO_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct" \
+  --local-dir-use-symlinks False
+
+huggingface-cli snapshot-download Qwen/Qwen3.6-35B-A3B \
+  --local-dir "$LASO_MODEL_ROOT/mllm/Qwen3.6-35B-A3B" \
+  --local-dir-use-symlinks False
+
+huggingface-cli snapshot-download OpenGVLab/InternVL3_5-30B-A3B \
+  --local-dir "$LASO_MODEL_ROOT/mllm/InternVL3_5-30B-A3B" \
+  --local-dir-use-symlinks False
+
+huggingface-cli snapshot-download zai-org/GLM-4.5V \
+  --local-dir "$LASO_MODEL_ROOT/mllm/GLM-4.5V" \
+  --local-dir-use-symlinks False
+```
+
+Download the embedding models:
+
+```bash
+huggingface-cli snapshot-download sentence-transformers/all-MiniLM-L6-v2 \
+  --local-dir "$LASO_MODEL_ROOT/embedding/all-MiniLM-L6-v2" \
+  --local-dir-use-symlinks False
+
+huggingface-cli snapshot-download openai/clip-vit-base-patch32 \
+  --local-dir "$LASO_MODEL_ROOT/embedding/clip-vit-base-patch32" \
+  --local-dir-use-symlinks False
+
+huggingface-cli snapshot-download openai/clip-vit-large-patch14 \
+  --local-dir "$LASO_MODEL_ROOT/embedding/clip-vit-large-patch14" \
+  --local-dir-use-symlinks False
+
+huggingface-cli snapshot-download google/siglip-base-patch16-224 \
+  --local-dir "$LASO_MODEL_ROOT/embedding/siglip-base-patch16-224" \
+  --local-dir-use-symlinks False
+
+huggingface-cli snapshot-download Alibaba-NLP/gme-Qwen2-VL-7B-Instruct \
+  --local-dir "$LASO_MODEL_ROOT/embedding/gme-Qwen2-VL-7B-Instruct" \
+  --local-dir-use-symlinks False
+```
+
+A compact bulk-download form is useful on fresh machines:
+
+```bash
+export LASO_MODEL_ROOT=/localhome/hza214/models/laso
+mkdir -p "$LASO_MODEL_ROOT"/{mllm,embedding}
+
+declare -A MLLM_MODELS=(
+  [Qwen3-VL-30B-A3B-Instruct]=Qwen/Qwen3-VL-30B-A3B-Instruct
+  [Qwen3.6-35B-A3B]=Qwen/Qwen3.6-35B-A3B
+  [InternVL3_5-30B-A3B]=OpenGVLab/InternVL3_5-30B-A3B
+  [GLM-4.5V]=zai-org/GLM-4.5V
+)
+
+declare -A EMBEDDING_MODELS=(
+  [all-MiniLM-L6-v2]=sentence-transformers/all-MiniLM-L6-v2
+  [clip-vit-base-patch32]=openai/clip-vit-base-patch32
+  [clip-vit-large-patch14]=openai/clip-vit-large-patch14
+  [siglip-base-patch16-224]=google/siglip-base-patch16-224
+  [gme-Qwen2-VL-7B-Instruct]=Alibaba-NLP/gme-Qwen2-VL-7B-Instruct
+)
+
+for name in "${!MLLM_MODELS[@]}"; do
+  huggingface-cli snapshot-download "${MLLM_MODELS[$name]}" \
+    --local-dir "$LASO_MODEL_ROOT/mllm/$name" \
+    --local-dir-use-symlinks False
+done
+
+for name in "${!EMBEDDING_MODELS[@]}"; do
+  huggingface-cli snapshot-download "${EMBEDDING_MODELS[$name]}" \
+    --local-dir "$LASO_MODEL_ROOT/embedding/$name" \
+    --local-dir-use-symlinks False
+done
+```
+
+To serve a local checkpoint with vLLM, pass the local directory instead of the
+remote Hugging Face id:
+
+```bash
+vllm serve "$LASO_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct" \
+  --served-model-name Qwen3-VL-30B-A3B-Instruct \
+  --enable-mm-embeds \
+  --tensor-parallel-size 2 \
+  --max-model-len 131072 \
+  --port 8000
+```
+
+For embedding loaders, pass the downloaded directory as the model path. GME
+requires `trust_remote_code=True` in the common SentenceTransformers / Transformers
+loaders.
+
+```python
+from sentence_transformers import SentenceTransformer
+
+minilm = SentenceTransformer(
+    "/localhome/hza214/models/laso/embedding/all-MiniLM-L6-v2"
+)
+
+gme = SentenceTransformer(
+    "/localhome/hza214/models/laso/embedding/gme-Qwen2-VL-7B-Instruct",
+    trust_remote_code=True,
+)
+```
+
 #### Directory layout
 
 All data/model locations are resolved from the environment variable
