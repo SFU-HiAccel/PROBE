@@ -222,7 +222,7 @@ export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export CMAKE_ARGS="-Dprotobuf_BUILD_TESTS=OFF"
 export CFLAGS="$CFLAGS -Wno-error=incompatible-pointer-types -Wno-incompatible-pointer-types"
-export LASO_DATA_ROOT=/localhome/hza214
+export LASO_DATA_ROOT=""
 vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --enable-mm-embeds \
   --tensor-parallel-size 2 \
@@ -310,7 +310,7 @@ Choose a local model root. The examples below keep model weights separate from
 more convenient.
 
 ```bash
-export LASO_MODEL_ROOT=/localhome/hza214/models/laso
+export LASO_MODEL_ROOT=""
 mkdir -p "$LASO_MODEL_ROOT"/{mllm,embedding}
 
 python3 -m pip install -U "huggingface_hub[cli]"
