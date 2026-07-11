@@ -1,19 +1,19 @@
-# LASO: A Proxy-Based Approximate Semantic Query Engine
+# PROBE: A Proxy-Based Approximate Semantic Query Engine
 
 
-LASO is a proxy-based approximate query processing (AQP) engine for **semantic SQL
+PROBE is a proxy-based approximate query processing (AQP) engine for **semantic SQL
 operators** (`sem_filter`, `sem_join`). AI query systems powered by large language
 models (LLMs) let operators such as filters and joins evaluate complex natural-language
 predicates over unstructured, multimodal data, but scaling them is expensive: every
 input tuple costs one or more LLM invocations. A semantic join over a 115K-row table,
 for example, takes more than 11 hours of LLM calls.
 
-LASO reduces this cost by training a lightweight **proxy classifier** on a small sample
+PROBE reduces this cost by training a lightweight **proxy classifier** on a small sample
 labeled by an expensive expert MLLM and using the proxy to evaluate the remaining rows.
 The central difficulty is **high selectivity**: when matching rows are extremely rare
 under the benchmark's human reference labels, naive sampling fails to collect enough
 informative examples to fit an accurate proxy, and a single-shot proxy generalizes
-poorly. LASO addresses this with three ideas that share a single 1-D ordering axis built
+poorly. PROBE addresses this with three ideas that share a single 1-D ordering axis built
 from embedding similarity:
 
 1. **Active-learning sampling** concentrates the LLM budget on rows near the predicate's
@@ -45,7 +45,7 @@ from embedding similarity:
 └───────────────────────────────┬──────────────────────────────────────┘
                                 ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  cluster_proxy.py — the three-stage LASO pipeline                       │
+│  cluster_proxy.py — the three-stage PROBE pipeline                       │
 │                                                                         │
 │   ① Active-learning sampling    select B boundary rows, label via MLLM  │
 │   ② Logistic-regression proxy    base score z for every candidate       │
@@ -61,7 +61,7 @@ from embedding similarity:
 All three stages reuse the same shared 1-D axis σ derived from SigLIP cosine similarity
 between each row's embedding and the query embedding. For joins, each candidate pair
 `(left, right)` is embedded by concatenating and mean-pooling the two side embeddings;
-candidates come from the host engine's blocking step, so LASO scores only the pairs the
+candidates come from the host engine's blocking step, so PROBE scores only the pairs the
 planner materialized rather than the full cross product.
 
 ---
@@ -115,7 +115,7 @@ The proxy thresholds `z^prop` at `θ` to assign every candidate's label `ŷᵢ =
 ### 3. Online Model Router — `learned_deferral.py`, `cluster_proxy.py`
 
 A proxy that is accurate on average can still be wrong on specific rows. Instead of a
-threshold on `z^prop`, LASO trains a **per-row router** that estimates the probability the
+threshold on `z^prop`, PROBE trains a **per-row router** that estimates the probability the
 proxy's label disagrees with the MLLM, and escalates the highest-risk rows under a
 verification budget `B_v`.
 
@@ -161,7 +161,7 @@ top-`B_v` highest-risk rows to a fresh LLM call.
 
 ## Workload
 
-LASO is evaluated on 14 highly selective filter (`F`) and join (`J`) queries spanning text
+PROBE is evaluated on 14 highly selective filter (`F`) and join (`J`) queries spanning text
 and multimodal predicates, drawn from **SemBench** and **LRO-Bench**:
 
 | Query | Scenario | Type | Modality | Candidates | Matching Rate |
@@ -182,7 +182,7 @@ and multimodal predicates, drawn from **SemBench** and **LRO-Bench**:
 | LRO_match305 | schools  | J | text       | 1,421   | 7.74e-3 |
 
 Quality is reported as F₁, precision, and recall against SemBench / LRO-Bench human
-reference labels. The human labels are used only for evaluation — LASO observes only the
+reference labels. The human labels are used only for evaluation — PROBE observes only the
 labels returned by the expert MLLM during sampling and rollback.
 
 ---
@@ -222,7 +222,7 @@ export CUDA_HOME=$CONDA_PREFIX
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export CMAKE_ARGS="-Dprotobuf_BUILD_TESTS=OFF"
 export CFLAGS="$CFLAGS -Wno-error=incompatible-pointer-types -Wno-incompatible-pointer-types"
-export LASO_DATA_ROOT=""
+export PROBE_DATA_ROOT=""
 vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --enable-mm-embeds \
   --tensor-parallel-size 2 \
@@ -234,7 +234,7 @@ vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --max-num-seqs 512 \
   --max-num-batched-tokens 32768 \
   --enable-prefix-caching \
-  --allowed-local-media-path "$LASO_DATA_ROOT/SemBench/" \
+  --allowed-local-media-path "$PROBE_DATA_ROOT/SemBench/" \
   > vllm_server_30b.log 2>&1 &
 
 ```
@@ -250,11 +250,11 @@ endpoint with `VLLM_METRICS_URL` if you serve elsewhere.
 
 #### Download links
 
-Both benchmarks are **public, third-party artifacts** (not authored by us); LASO
+Both benchmarks are **public, third-party artifacts** (not authored by us); PROBE
 consumes them unmodified. Obtain each from its canonical source below, then point
-`$LASO_DATA_ROOT` at the result (layout in the next subsection).
+`$PROBE_DATA_ROOT` at the result (layout in the next subsection).
 
-| Benchmark | What LASO uses | Code / paper | Data download |
+| Benchmark | What PROBE uses | Code / paper | Data download |
 |-----------|----------------|--------------|---------------|
 | **SemBench** | cars / ecomm / movie / mmqa / animals scenarios | [github.com/SemBench/SemBench](https://github.com/SemBench/SemBench/) · [arXiv:2511.01716](https://arxiv.org/abs/2511.01716) | Auto-downloaded from Google Drive on first harness run (per-scenario file IDs below) |
 | **LRO-Bench** | `santos` tables for the four `LRO_match*` join queries | [github.com/LROBench/LROBench](https://github.com/LROBench/LROBench/) · [arXiv:2603.02537](https://arxiv.org/abs/2603.02537) | Clone the repo's database CSVs (27 DBs from BIRD / Magellan / NextiaJD / Santos) |
@@ -273,9 +273,9 @@ downloader (direct link form: `https://drive.google.com/file/d/<file_id>/view`) 
 | animals  | `1HG6tvXIA0BtpqbZqCR46oNSeY2yZ4Lko` |
 
 **LRO-Bench** distributes its relational databases through the LROBench repository above.
-LASO's four join queries (`LRO_match{113,121,202,305}`) read only the `santos` tables;
+PROBE's four join queries (`LRO_match{113,121,202,305}`) read only the `santos` tables;
 clone the repo and place its `databases/` tree where `$LROBENCH_DATABASES_DIR` points
-(default `$LASO_DATA_ROOT/databases/`).
+(default `$PROBE_DATA_ROOT/databases/`).
 
 
 #### Model checkpoint links
@@ -288,30 +288,30 @@ Expert MLLMs:
 
 | Paper name | Hugging Face model id | Link | Suggested local directory |
 |---|---|---|---|
-| Qwen3-VL-30B-A3B-Instruct | `Qwen/Qwen3-VL-30B-A3B-Instruct` | <https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct> | `$LASO_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct` |
-| Qwen3.6-35B-A3B | `Qwen/Qwen3.6-35B-A3B` | <https://huggingface.co/Qwen/Qwen3.6-35B-A3B> | `$LASO_MODEL_ROOT/mllm/Qwen3.6-35B-A3B` |
-| InternVL3.5-30B-A3B | `OpenGVLab/InternVL3_5-30B-A3B` | <https://huggingface.co/OpenGVLab/InternVL3_5-30B-A3B> | `$LASO_MODEL_ROOT/mllm/InternVL3_5-30B-A3B` |
-| GLM-4.5V | `zai-org/GLM-4.5V` | <https://huggingface.co/zai-org/GLM-4.5V> | `$LASO_MODEL_ROOT/mllm/GLM-4.5V` |
+| Qwen3-VL-30B-A3B-Instruct | `Qwen/Qwen3-VL-30B-A3B-Instruct` | <https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct> | `$PROBE_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct` |
+| Qwen3.6-35B-A3B | `Qwen/Qwen3.6-35B-A3B` | <https://huggingface.co/Qwen/Qwen3.6-35B-A3B> | `$PROBE_MODEL_ROOT/mllm/Qwen3.6-35B-A3B` |
+| InternVL3.5-30B-A3B | `OpenGVLab/InternVL3_5-30B-A3B` | <https://huggingface.co/OpenGVLab/InternVL3_5-30B-A3B> | `$PROBE_MODEL_ROOT/mllm/InternVL3_5-30B-A3B` |
+| GLM-4.5V | `zai-org/GLM-4.5V` | <https://huggingface.co/zai-org/GLM-4.5V> | `$PROBE_MODEL_ROOT/mllm/GLM-4.5V` |
 
 Embedding models:
 
 | Paper name | Hugging Face model id | Link | Suggested local directory |
 |---|---|---|---|
-| miniLM | `sentence-transformers/all-MiniLM-L6-v2` | <https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2> | `$LASO_MODEL_ROOT/embedding/all-MiniLM-L6-v2` |
-| clip-base | `openai/clip-vit-base-patch32` | <https://huggingface.co/openai/clip-vit-base-patch32> | `$LASO_MODEL_ROOT/embedding/clip-vit-base-patch32` |
-| clip-large | `openai/clip-vit-large-patch14` | <https://huggingface.co/openai/clip-vit-large-patch14> | `$LASO_MODEL_ROOT/embedding/clip-vit-large-patch14` |
-| siglip | `google/siglip-base-patch16-224` | <https://huggingface.co/google/siglip-base-patch16-224> | `$LASO_MODEL_ROOT/embedding/siglip-base-patch16-224` |
-| gme | `Alibaba-NLP/gme-Qwen2-VL-7B-Instruct` | <https://huggingface.co/Alibaba-NLP/gme-Qwen2-VL-7B-Instruct> | `$LASO_MODEL_ROOT/embedding/gme-Qwen2-VL-7B-Instruct` |
+| miniLM | `sentence-transformers/all-MiniLM-L6-v2` | <https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2> | `$PROBE_MODEL_ROOT/embedding/all-MiniLM-L6-v2` |
+| clip-base | `openai/clip-vit-base-patch32` | <https://huggingface.co/openai/clip-vit-base-patch32> | `$PROBE_MODEL_ROOT/embedding/clip-vit-base-patch32` |
+| clip-large | `openai/clip-vit-large-patch14` | <https://huggingface.co/openai/clip-vit-large-patch14> | `$PROBE_MODEL_ROOT/embedding/clip-vit-large-patch14` |
+| siglip | `google/siglip-base-patch16-224` | <https://huggingface.co/google/siglip-base-patch16-224> | `$PROBE_MODEL_ROOT/embedding/siglip-base-patch16-224` |
+| gme | `Alibaba-NLP/gme-Qwen2-VL-7B-Instruct` | <https://huggingface.co/Alibaba-NLP/gme-Qwen2-VL-7B-Instruct> | `$PROBE_MODEL_ROOT/embedding/gme-Qwen2-VL-7B-Instruct` |
 
 #### Download model checkpoints locally
 
 Choose a local model root. The examples below keep model weights separate from
-`$LASO_DATA_ROOT`, but you can place them under the same storage volume if that is
+`$PROBE_DATA_ROOT`, but you can place them under the same storage volume if that is
 more convenient.
 
 ```bash
-export LASO_MODEL_ROOT=""
-mkdir -p "$LASO_MODEL_ROOT"/{mllm,embedding}
+export PROBE_MODEL_ROOT=""
+mkdir -p "$PROBE_MODEL_ROOT"/{mllm,embedding}
 
 python3 -m pip install -U "huggingface_hub[cli]"
 huggingface-cli login   # needed for gated models or accepted-license downloads
@@ -321,19 +321,19 @@ Download the expert MLLMs:
 
 ```bash
 huggingface-cli snapshot-download Qwen/Qwen3-VL-30B-A3B-Instruct \
-  --local-dir "$LASO_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct" \
+  --local-dir "$PROBE_MODEL_ROOT/mllm/Qwen3-VL-30B-A3B-Instruct" \
   --local-dir-use-symlinks False
 
 huggingface-cli snapshot-download Qwen/Qwen3.6-35B-A3B \
-  --local-dir "$LASO_MODEL_ROOT/mllm/Qwen3.6-35B-A3B" \
+  --local-dir "$PROBE_MODEL_ROOT/mllm/Qwen3.6-35B-A3B" \
   --local-dir-use-symlinks False
 
 huggingface-cli snapshot-download OpenGVLab/InternVL3_5-30B-A3B \
-  --local-dir "$LASO_MODEL_ROOT/mllm/InternVL3_5-30B-A3B" \
+  --local-dir "$PROBE_MODEL_ROOT/mllm/InternVL3_5-30B-A3B" \
   --local-dir-use-symlinks False
 
 huggingface-cli snapshot-download zai-org/GLM-4.5V \
-  --local-dir "$LASO_MODEL_ROOT/mllm/GLM-4.5V" \
+  --local-dir "$PROBE_MODEL_ROOT/mllm/GLM-4.5V" \
   --local-dir-use-symlinks False
 ```
 
@@ -341,40 +341,40 @@ Download the embedding models:
 
 ```bash
 huggingface-cli snapshot-download sentence-transformers/all-MiniLM-L6-v2 \
-  --local-dir "$LASO_MODEL_ROOT/embedding/all-MiniLM-L6-v2" \
+  --local-dir "$PROBE_MODEL_ROOT/embedding/all-MiniLM-L6-v2" \
   --local-dir-use-symlinks False
 
 huggingface-cli snapshot-download openai/clip-vit-base-patch32 \
-  --local-dir "$LASO_MODEL_ROOT/embedding/clip-vit-base-patch32" \
+  --local-dir "$PROBE_MODEL_ROOT/embedding/clip-vit-base-patch32" \
   --local-dir-use-symlinks False
 
 huggingface-cli snapshot-download openai/clip-vit-large-patch14 \
-  --local-dir "$LASO_MODEL_ROOT/embedding/clip-vit-large-patch14" \
+  --local-dir "$PROBE_MODEL_ROOT/embedding/clip-vit-large-patch14" \
   --local-dir-use-symlinks False
 
 huggingface-cli snapshot-download google/siglip-base-patch16-224 \
-  --local-dir "$LASO_MODEL_ROOT/embedding/siglip-base-patch16-224" \
+  --local-dir "$PROBE_MODEL_ROOT/embedding/siglip-base-patch16-224" \
   --local-dir-use-symlinks False
 
 huggingface-cli snapshot-download Alibaba-NLP/gme-Qwen2-VL-7B-Instruct \
-  --local-dir "$LASO_MODEL_ROOT/embedding/gme-Qwen2-VL-7B-Instruct" \
+  --local-dir "$PROBE_MODEL_ROOT/embedding/gme-Qwen2-VL-7B-Instruct" \
   --local-dir-use-symlinks False
 ```
 
 #### Directory layout
 
 All data/model locations are resolved from the environment variable
-`LASO_DATA_ROOT` (default: your home directory). No paths are hardcoded. Lay out the
+`PROBE_DATA_ROOT` (default: your home directory). No paths are hardcoded. Lay out the
 inputs as follows and point the variable at the root:
 
 ```bash
-export LASO_DATA_ROOT=/path/to/data_root
+export PROBE_DATA_ROOT=/path/to/data_root
 ```
 
 
 - **SemBench** provides the cars / ecomm / movie / mmqa / animals scenarios.
 - **LRO-Bench** provides the `LRO_match*` join queries; `run_lrobench_select127_grid.py`
-  reads its tables from `$LASO_DATA_ROOT` as well.
+  reads its tables from `$PROBE_DATA_ROOT` as well.
 
 ### Run the experiments
 
@@ -399,7 +399,7 @@ the recommended entry point.
 Run them directly:
 
 ```bash
-export LASO_DATA_ROOT=
+export PROBE_DATA_ROOT=
 
 # Use this to create the run conda env (run from the repo root)
 bash create_run_env.sh
@@ -413,12 +413,12 @@ bash experiments/05_hyperparameter_sensitivity.sh   # Fig 3
 # … 9 scripts total, one per experiment (01–09)
 
 # Preview a script's resolved config without launching Spark/LLM:
-LASO_DRYRUN=1 bash experiments/01_main_system_comparison.sh
+PROBE_DRYRUN=1 bash experiments/01_main_system_comparison.sh
 ```
 
 `run.py` is the underlying harness. It takes an optional positional argument selecting the
-benchmark (or the `LASO_QUERIES` env var); with no argument it runs the full grid. Results
-go to **`./results/direct_grid/`** (or `LASO_RESULTS_DIR`).
+benchmark (or the `PROBE_QUERIES` env var); with no argument it runs the full grid. Results
+go to **`./results/direct_grid/`** (or `PROBE_RESULTS_DIR`).
 
 ```bash
 # Direct harness invocation (the experiments/ scripts wrap these)
@@ -453,7 +453,7 @@ describing exactly what it draws and which sheet it reads:
 
 | Script | Paper artifact (label) | What it does | `plotdata.xlsx` sheet(s) |
 |--------|------------------------|--------------|--------------------------|
-| `paper_figures/plot_system_f1.py` | `fig_sys_f1.pdf` (`fig:sys-f1`) | Per-query **F₁** grouped bars across the 7 systems (Lotus, ThalamusDB, UQE, BARGAIN, Baseline, LASO−router, LASO+router) | `ablation-f1-system` |
+| `paper_figures/plot_system_f1.py` | `fig_sys_f1.pdf` (`fig:sys-f1`) | Per-query **F₁** grouped bars across the 7 systems (Lotus, ThalamusDB, UQE, BARGAIN, Baseline, PROBE−router, PROBE+router) | `ablation-f1-system` |
 | `paper_figures/plot_system_latency.py` | `fig_sys_latency.pdf` (`fig:sys-latency`) | Per-query **latency** (log scale), same 7 systems | `ablation-latency-system` |
 | `paper_figures/plot_time_breakdown.py` | `fig_time_abs.pdf` (`fig:time-stack`) | **Absolute** stacked-bar time breakdown per query (embedding / sampling / labeling / propagation / proxy-train / proxy-predict / LLM-rollback) vs the full-MLLM baseline | `time-breakdown`, `ablation-latency-system` |
 | `paper_figures/plot_hparam_sensitivity.py` | `fig_hparam.pdf` (`fig:hparam`) | 5×3 dual-axis grid: F₁ & latency vs sampling rate, kNN degree *k*, and explore rate ρ | `hyper-param` |
@@ -470,7 +470,7 @@ pipeline, threshold contraction) have no generator script — they are authored 
 similarity-distribution figures. Unlike the scripts above, it does **not** read
 `plotdata.xlsx` — it loads the actual benchmark data, computes SigLIP embeddings, and
 plots the per-row similarity/label distributions, so it needs the **`run` env**, the
-dataset under `$LASO_DATA_ROOT`, the embedding model, and Spark (the repo's plugin JAR is
+dataset under `$PROBE_DATA_ROOT`, the embedding model, and Spark (the repo's plugin JAR is
 auto-located; no LLM endpoint required). Outputs land in `./results/similarity_dist/`.
 
 | Paper figure | LaTeX label | Command (from repo root) | Output |
@@ -486,10 +486,10 @@ Figures 1 and 4 can be produced together from the same data/jitter with
 
 ## Reproducing the Baselines
 
-The paper compares LASO against four systems. **Lotus** and **ThalamusDB** are run
+The paper compares PROBE against four systems. **Lotus** and **ThalamusDB** are run
 through the vendored SemBench copy (`third_party/sembench`), **BARGAIN** through the
 vendored BARGAIN copy (`third_party/bargain`), and **UQE** is the in-repo `run.py`
-sampler `uqe_active`. All four use the *same* serving stack as LASO: vLLM serving the
+sampler `uqe_active`. All four use the *same* serving stack as PROBE: vLLM serving the
 expert `Qwen/Qwen3-VL-30B-A3B-Instruct` (and, for the proxy cascades,
 `Qwen/Qwen3-VL-2B-Instruct`) over an OpenAI-compatible endpoint (default
 `http://localhost:8000/v1`; see §R5). SigLIP is the shared embedder.
@@ -505,7 +505,7 @@ and calls `http://localhost:8000/v1`; ThalamusDB selects a model config by the f
 ```bash
 cd third_party/sembench
 conda activate run
-export LASO_DATA_PATH=/path/to/SemBench/files
+export PROBE_DATA_PATH=/path/to/SemBench/files
 
 
 # Lotus — pass the BARE model name (runner prepends hosted_vllm/)
@@ -530,7 +530,7 @@ benchmark data via the environment, then run a tag or group:
 ```bash
 cd third_party/bargain
 pip install -e .                                   # or: pip install -r ../sembench/requirements.txt
-export LASO_DATA_ROOT=/path/to/data_root
+export PROBE_DATA_ROOT=/path/to/data_root
 export LROBENCH_DATABASES_DIR=/path/to/databases
 python examples/run_bargain_galaxy_grid.py all \
   --proxy-model  "Qwen/Qwen3-VL-2B-Instruct"     --proxy-url  http://localhost:8001/v1 \
@@ -544,20 +544,20 @@ Per-query F1 / oracle-usage CSVs are written under `--results-dir`.
 ### UQE (`run.py`, `uqe_active`)
 
 UQE is the in-repo logistic-regression proxy with active-learning sampling and no
-label propagation or router. Select it through the `LASO_ABLATIONS` env var (label
+label propagation or router. Select it through the `PROBE_ABLATIONS` env var (label
 `uqe_active+lr_only`, matching the paper's UQE row); the expert model comes from
 `SEMBENCH_MODEL` (default `Qwen/Qwen3-VL-30B-A3B-Instruct`):
 
 ```bash
 # from the repo root
-export LASO_DATA_ROOT=/path/to/data_root
-LASO_ABLATIONS="uqe_active+lr_only" python3 run.py ecomm_q7      # one query
-LASO_ABLATIONS="uqe_active+lr_only" python3 run.py ecomm         # a scenario
+export PROBE_DATA_ROOT=/path/to/data_root
+PROBE_ABLATIONS="uqe_active+lr_only" python3 run.py ecomm_q7      # one query
+PROBE_ABLATIONS="uqe_active+lr_only" python3 run.py ecomm         # a scenario
 ```
 
 The `uqe_active` sampler is implemented in `cluster_proxy.py` (selected via the
 `uqe_active` strategy in `run.py`'s `ABLATION_CONFIGS`). The matching
-budgets/knn/explore-rate knobs (`LASO_BUDGET_PCTS`, `LASO_KNN_K`, `LASO_VS_RATIO`) are
+budgets/knn/explore-rate knobs (`PROBE_BUDGET_PCTS`, `PROBE_KNN_K`, `PROBE_VS_RATIO`) are
 documented in §R6–R7.
 
 ---
