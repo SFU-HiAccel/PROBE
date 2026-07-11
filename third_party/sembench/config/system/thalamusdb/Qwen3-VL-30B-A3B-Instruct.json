@@ -1,0 +1,19 @@
+{
+	"models":[
+		{
+			"modalities":["text", "image"], "priority": 10,
+			"kwargs": {
+			    "filter": {
+					"model": "hosted_vllm/Qwen/Qwen3-VL-30B-A3B-Instruct",
+					"temperature": 0,
+					"max_tokens": 1
+				},
+				"join": {
+				    "model": "hosted_vllm/Qwen/Qwen3-VL-30B-A3B-Instruct",
+					"temperature": 0,
+					"stop": ["."]
+                }
+			}
+		}
+	]
+}

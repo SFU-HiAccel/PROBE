@@ -1,0 +1,1 @@
+SELECT age, gender, smoking_history, did_family_have_cancer, patient_id FROM patients WHERE did_family_have_cancer = 1 AND x_ray_diagnosis NOT IN ('00_normal', 'none') LIMIT 5;

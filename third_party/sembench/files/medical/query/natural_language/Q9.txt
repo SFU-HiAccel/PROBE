@@ -1,0 +1,1 @@
+Find patients who are sick according to both skin moles image and lung X-Ray image (semantic filter/join with two images in one prompt).

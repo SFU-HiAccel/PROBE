@@ -1,0 +1,1 @@
+Count patients who are actively smoking ("Current") and whose audio and X-Ray image suggest lung diseases.

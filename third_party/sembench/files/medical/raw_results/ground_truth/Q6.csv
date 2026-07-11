@@ -1,0 +1,287 @@
+age,gender,smoking_history,did_family_have_cancer,audio_diagnosis,patient_id,x_ray_diagnosis,text_diagnosis,skin_cancer_diagnosis,is_sick
+46,Female,Former,0,none,7313,00_normal,jaundice,none,True
+75,Male,Never,1,none,3813,00_normal,jaundice,none,True
+77,Female,Never,0,none,8765,00_normal,urinary tract infection,none,True
+70,Female,Current,1,normal,11099,none,chicken pox,none,True
+73,Female,Never,0,none,10704,00_normal,pneumonia,none,True
+37,Male,Former,1,none,9803,00_normal,chicken pox,benign,True
+36,Female,Current,0,none,1783,00_normal,cervical spondylosis,none,True
+36,Male,Former,0,none,9508,00_normal,dimorphic hemorrhoids,none,True
+21,Male,Former,1,normal,11048,00_normal,peptic ulcer disease,none,True
+45,Male,Current,0,none,1964,00_normal,cervical spondylosis,none,True
+86,Male,Current,0,none,8552,00_normal,hypertension,none,True
+43,Female,Never,0,none,5298,00_normal,dengue,none,True
+58,Male,Former,0,none,10064,00_normal,impetigo,none,True
+51,Male,Current,0,none,2935,00_normal,pneumonia,none,True
+87,Male,Former,1,none,3509,00_normal,chicken pox,benign,True
+71,Male,Never,0,none,1261,00_normal,acne,malignant,True
+88,Male,Never,1,none,8137,00_normal,hypertension,none,True
+71,Male,Former,1,none,321,00_normal,pneumonia,none,True
+43,Male,Former,0,none,1406,00_normal,gastroesophageal reflux disease,none,True
+53,Male,Former,0,none,6714,00_normal,peptic ulcer disease,none,True
+78,Male,Current,1,none,4716,00_normal,allergy,malignant,True
+78,Male,Current,0,none,7100,00_normal,urinary tract infection,none,True
+87,Male,Current,1,none,5597,00_normal,migraine,none,True
+36,Male,Never,0,normal,11070,none,hypertension,none,True
+47,Male,Never,0,none,740,00_normal,psoriasis,none,True
+73,Male,Never,0,none,673,00_normal,urinary tract infection,none,True
+71,Female,Current,0,none,9537,00_normal,gastroesophageal reflux disease,none,True
+59,Male,Current,0,none,10151,00_normal,diabetes,malignant,True
+48,Male,Former,0,none,3263,00_normal,psoriasis,none,True
+37,Female,Current,0,none,5065,00_normal,common cold,none,True
+54,Male,Current,1,none,10870,00_normal,fungal infection,malignant,True
+83,Female,Current,0,none,3206,00_normal,impetigo,malignant,True
+87,Female,Current,0,none,4012,00_normal,acne,benign,True
+40,Female,Former,0,none,7034,00_normal,malaria,none,True
+45,Male,Former,0,none,3238,00_normal,allergy,none,True
+70,Female,Current,0,none,8698,00_normal,typhoid,none,True
+63,Male,Former,0,none,6177,00_normal,psoriasis,none,True
+33,Male,Current,1,normal,11080,none,common cold,none,True
+87,Female,Former,0,none,218,00_normal,jaundice,none,True
+67,Male,Former,1,none,10372,00_normal,cervical spondylosis,none,True
+81,Male,Never,0,none,8068,00_normal,fungal infection,none,True
+60,Male,Former,0,none,6622,00_normal,pneumonia,none,True
+50,Male,Former,0,none,4574,00_normal,dengue,none,True
+65,Female,Current,1,none,10364,00_normal,malaria,none,True
+51,Female,Current,0,none,10669,00_normal,peptic ulcer disease,none,True
+75,Male,Former,1,none,10993,00_normal,urinary tract infection,none,True
+82,Male,Never,0,none,1193,00_normal,gastroesophageal reflux disease,none,True
+30,Male,Former,1,normal,11050,none,malaria,none,True
+56,Male,Never,0,none,8939,00_normal,common cold,none,True
+78,Male,Former,0,none,95,00_normal,gastroesophageal reflux disease,none,True
+54,Female,Current,0,none,483,00_normal,fungal infection,benign,True
+67,Female,Current,1,none,4032,00_normal,dimorphic hemorrhoids,none,True
+43,Male,Never,0,normal,11091,none,pneumonia,none,True
+51,Male,Current,0,none,7729,00_normal,common cold,none,True
+63,Male,Current,1,none,8736,00_normal,hypertension,none,True
+72,Male,Never,1,none,9430,00_normal,peptic ulcer disease,none,True
+60,Male,Never,0,none,2929,00_normal,bronchial asthma,none,True
+60,Male,Never,0,none,5027,00_normal,psoriasis,none,True
+68,Female,Never,0,none,6596,00_normal,gastroesophageal reflux disease,none,True
+85,Male,Former,1,none,6903,00_normal,varicose veins,none,True
+67,Male,Current,0,none,6500,00_normal,malaria,none,True
+44,Female,Former,1,none,5790,00_normal,drug reaction,none,True
+44,Male,Never,0,none,1453,00_normal,peptic ulcer disease,none,True
+58,Male,Never,0,none,3704,00_normal,migraine,none,True
+59,Male,Never,0,none,6270,00_normal,allergy,benign,True
+51,Male,Former,0,none,2771,00_normal,allergy,malignant,True
+72,Male,Current,1,none,5061,00_normal,drug reaction,benign,True
+83,Male,Former,0,none,6621,00_normal,bronchial asthma,none,True
+38,Male,Current,0,none,6388,00_normal,impetigo,malignant,True
+32,Male,Former,0,none,1208,00_normal,chicken pox,none,True
+34,Female,Current,0,none,2960,00_normal,chicken pox,none,True
+50,Male,Never,1,none,5576,00_normal,diabetes,benign,True
+55,Female,Former,1,none,7365,00_normal,fungal infection,malignant,True
+75,Male,Former,0,none,5849,00_normal,diabetes,none,True
+61,Male,Current,1,none,10155,00_normal,common cold,none,True
+31,Female,Never,0,none,6424,00_normal,pneumonia,none,True
+32,Male,Never,1,none,10077,00_normal,acne,none,True
+81,Female,Never,0,none,10480,00_normal,acne,none,True
+37,Female,Current,1,none,7726,00_normal,urinary tract infection,none,True
+74,Female,Current,0,none,4376,00_normal,dimorphic hemorrhoids,none,True
+77,Male,Former,1,none,9621,00_normal,psoriasis,none,True
+43,Female,Current,0,none,398,00_normal,arthritis,none,True
+77,Male,Never,0,none,9514,00_normal,arthritis,none,True
+63,Male,Never,1,none,5130,00_normal,diabetes,benign,True
+40,Male,Never,0,none,3942,00_normal,allergy,none,True
+37,Female,Current,0,none,9102,00_normal,dengue,none,True
+41,Male,Never,1,normal,11101,none,dimorphic hemorrhoids,none,True
+65,Male,Current,0,none,8937,00_normal,allergy,benign,True
+30,Female,Current,0,none,3181,00_normal,hypertension,none,True
+82,Male,Current,0,none,9230,00_normal,pneumonia,none,True
+82,Female,Never,0,none,3095,00_normal,drug reaction,benign,True
+85,Female,Never,0,none,8440,00_normal,diabetes,benign,True
+85,Female,Former,0,none,5662,00_normal,pneumonia,none,True
+78,Female,Former,0,none,10533,00_normal,diabetes,benign,True
+80,Male,Current,1,none,8968,00_normal,gastroesophageal reflux disease,none,True
+41,Male,Former,0,none,10883,00_normal,psoriasis,none,True
+58,Male,Former,1,none,4250,00_normal,impetigo,malignant,True
+69,Male,Former,0,none,9413,00_normal,migraine,none,True
+55,Male,Current,0,none,5992,00_normal,common cold,none,True
+52,Female,Never,1,none,5481,00_normal,typhoid,none,True
+31,Female,Never,0,none,5595,00_normal,impetigo,malignant,True
+57,Male,Former,1,none,3079,00_normal,varicose veins,none,True
+72,Male,Current,0,none,761,00_normal,malaria,none,True
+65,Female,Former,0,none,4771,00_normal,diabetes,none,True
+63,Male,Current,0,none,7172,00_normal,acne,none,True
+75,Male,Never,0,none,9305,00_normal,varicose veins,none,True
+44,Male,Former,0,none,88,00_normal,impetigo,benign,True
+53,Male,Never,0,none,5515,00_normal,peptic ulcer disease,none,True
+73,Male,Former,0,none,2357,00_normal,dimorphic hemorrhoids,none,True
+70,Male,Current,0,none,1113,00_normal,psoriasis,none,True
+33,Female,Current,0,none,9288,00_normal,dimorphic hemorrhoids,none,True
+84,Male,Current,1,none,4475,00_normal,arthritis,none,True
+89,Male,Former,0,none,427,00_normal,cervical spondylosis,none,True
+71,Male,Never,0,none,952,00_normal,acne,none,True
+52,Female,Never,0,normal,11069,none,common cold,none,True
+42,Male,Former,0,none,6913,00_normal,migraine,none,True
+59,Male,Former,0,none,8143,00_normal,peptic ulcer disease,none,True
+52,Male,Never,0,none,2754,00_normal,common cold,none,True
+36,Male,Current,1,none,1145,00_normal,migraine,none,True
+71,Male,Never,0,none,9460,00_normal,hypertension,none,True
+49,Female,Never,1,none,9934,00_normal,diabetes,none,True
+59,Female,Never,0,none,2455,00_normal,common cold,none,True
+34,Male,Former,1,none,8550,00_normal,hypertension,none,True
+68,Male,Current,0,none,3063,00_normal,malaria,none,True
+60,Female,Never,0,none,5537,00_normal,drug reaction,none,True
+78,Male,Former,0,none,6634,00_normal,drug reaction,benign,True
+35,Male,Former,0,none,6962,00_normal,psoriasis,none,True
+75,Female,Never,0,none,217,00_normal,malaria,none,True
+86,Male,Never,0,none,6167,00_normal,peptic ulcer disease,none,True
+89,Male,Former,0,none,80,00_normal,fungal infection,benign,True
+79,Female,Former,0,none,8869,00_normal,dimorphic hemorrhoids,none,True
+82,Female,Never,0,none,8280,00_normal,dimorphic hemorrhoids,none,True
+66,Male,Never,0,none,3299,00_normal,urinary tract infection,none,True
+39,Male,Never,0,none,5598,00_normal,chicken pox,none,True
+67,Male,Former,1,none,2260,00_normal,allergy,benign,True
+70,Male,Current,0,none,10462,00_normal,hypertension,none,True
+72,Male,Never,0,none,10431,00_normal,hypertension,none,True
+89,Female,Never,1,none,2956,00_normal,malaria,none,True
+55,Male,Current,0,none,4844,00_normal,peptic ulcer disease,none,True
+70,Male,Former,1,none,7413,00_normal,acne,benign,True
+59,Male,Never,1,none,101,00_normal,urinary tract infection,none,True
+64,Female,Never,1,none,9475,00_normal,cervical spondylosis,none,True
+39,Male,Former,0,none,1408,00_normal,typhoid,none,True
+56,Female,Never,0,none,9044,00_normal,varicose veins,none,True
+72,Male,Current,0,none,3375,00_normal,varicose veins,none,True
+56,Male,Former,1,none,9805,00_normal,arthritis,none,True
+53,Male,Former,0,none,9851,00_normal,gastroesophageal reflux disease,none,True
+31,Male,Former,0,none,7453,00_normal,jaundice,none,True
+56,Male,Former,0,none,10676,00_normal,drug reaction,malignant,True
+72,Female,Former,0,none,2631,00_normal,urinary tract infection,none,True
+52,Male,Former,0,none,4608,00_normal,diabetes,none,True
+78,Female,Former,0,none,3210,00_normal,jaundice,none,True
+75,Male,Former,0,none,7704,00_normal,malaria,none,True
+42,Male,Former,0,none,1785,00_normal,dengue,none,True
+43,Male,Former,0,none,4934,00_normal,gastroesophageal reflux disease,none,True
+79,Female,Former,0,none,3891,00_normal,bronchial asthma,none,True
+50,Male,Never,1,none,7103,00_normal,arthritis,none,True
+52,Female,Current,0,none,4802,00_normal,arthritis,none,True
+61,Female,Never,0,none,4639,00_normal,dengue,none,True
+71,Male,Never,0,none,2154,00_normal,common cold,none,True
+85,Male,Never,0,none,7055,00_normal,drug reaction,none,True
+86,Female,Never,1,none,9523,00_normal,fungal infection,none,True
+80,Female,Never,1,none,6001,00_normal,diabetes,benign,True
+85,Male,Former,1,none,8343,00_normal,psoriasis,none,True
+70,Male,Former,0,none,2680,00_normal,impetigo,benign,True
+76,Female,Current,0,none,5875,00_normal,chicken pox,none,True
+67,Female,Former,0,none,8005,00_normal,typhoid,none,True
+68,Female,Never,1,none,9498,00_normal,acne,benign,True
+37,Female,Former,0,none,4421,00_normal,gastroesophageal reflux disease,none,True
+52,Male,Current,0,none,2340,00_normal,urinary tract infection,none,True
+34,Male,Never,1,none,1835,00_normal,pneumonia,none,True
+50,Male,Former,1,none,3021,00_normal,gastroesophageal reflux disease,none,True
+37,Male,Current,1,none,10685,00_normal,migraine,none,True
+89,Male,Never,0,none,2459,00_normal,chicken pox,malignant,True
+75,Female,Never,1,none,9509,00_normal,malaria,none,True
+66,Male,Former,0,none,7931,00_normal,allergy,none,True
+34,Male,Former,0,none,5639,00_normal,allergy,none,True
+84,Male,Current,1,none,2288,00_normal,migraine,none,True
+43,Female,Former,0,none,2589,00_normal,impetigo,none,True
+83,Female,Never,0,none,3649,00_normal,hypertension,none,True
+84,Male,Former,1,none,1123,00_normal,malaria,none,True
+79,Male,Former,0,none,8903,00_normal,fungal infection,benign,True
+48,Male,Current,0,none,9943,00_normal,fungal infection,benign,True
+63,Male,Current,0,none,29,00_normal,typhoid,none,True
+73,Male,Never,0,none,3692,00_normal,acne,malignant,True
+52,Female,Former,1,none,6915,00_normal,drug reaction,malignant,True
+80,Male,Former,0,none,9812,00_normal,jaundice,none,True
+87,Male,Former,1,none,10246,00_normal,acne,malignant,True
+56,Female,Former,0,none,1576,00_normal,dengue,none,True
+73,Female,Current,0,none,10032,00_normal,diabetes,benign,True
+31,Female,Former,0,none,7796,00_normal,jaundice,none,True
+31,Male,Never,0,normal,11047,none,diabetes,benign,True
+35,Male,Former,0,none,9583,00_normal,hypertension,none,True
+36,Female,Never,0,none,9600,00_normal,psoriasis,none,True
+49,Female,Current,0,none,6346,00_normal,urinary tract infection,none,True
+73,Male,Current,0,none,7914,00_normal,chicken pox,benign,True
+72,Male,Never,0,none,7286,00_normal,bronchial asthma,none,True
+70,Male,Never,1,none,7387,00_normal,cervical spondylosis,none,True
+48,Female,Never,0,none,6011,00_normal,varicose veins,none,True
+73,Male,Former,1,none,8328,00_normal,typhoid,none,True
+47,Male,Former,0,none,676,00_normal,malaria,none,True
+89,Female,Current,1,none,4299,00_normal,dengue,none,True
+40,Male,Former,0,none,6030,00_normal,arthritis,none,True
+55,Female,Former,0,none,6080,00_normal,bronchial asthma,none,True
+78,Male,Former,0,none,14,00_normal,urinary tract infection,none,True
+56,Female,Never,0,none,7816,00_normal,typhoid,none,True
+86,Male,Former,0,none,8371,00_normal,dimorphic hemorrhoids,none,True
+43,Male,Current,0,none,710,00_normal,arthritis,none,True
+88,Male,Former,1,none,5730,00_normal,typhoid,none,True
+87,Male,Current,0,none,10521,00_normal,dengue,none,True
+63,Male,Never,0,none,9029,00_normal,fungal infection,benign,True
+45,Female,Never,0,none,1121,00_normal,varicose veins,none,True
+68,Male,Former,0,none,335,00_normal,pneumonia,none,True
+44,Male,Current,0,none,1626,00_normal,diabetes,none,True
+42,Female,Former,0,none,5292,00_normal,chicken pox,malignant,True
+38,Female,Never,0,none,5082,00_normal,migraine,none,True
+45,Male,Former,1,none,407,00_normal,typhoid,none,True
+65,Female,Former,0,none,3281,00_normal,peptic ulcer disease,none,True
+49,Male,Former,0,none,10569,00_normal,diabetes,none,True
+66,Male,Former,0,none,2709,00_normal,acne,benign,True
+49,Male,Former,1,none,4828,00_normal,cervical spondylosis,none,True
+81,Male,Never,0,none,3688,00_normal,allergy,none,True
+57,Male,Current,0,none,856,00_normal,arthritis,none,True
+83,Male,Former,0,none,2984,00_normal,arthritis,none,True
+80,Male,Former,1,none,10285,00_normal,chicken pox,none,True
+40,Female,Current,0,none,3798,00_normal,hypertension,none,True
+74,Male,Former,0,none,10367,00_normal,typhoid,none,True
+36,Female,Former,1,none,900,00_normal,urinary tract infection,none,True
+88,Male,Never,1,none,10741,00_normal,arthritis,none,True
+35,Female,Never,0,none,2522,00_normal,pneumonia,none,True
+82,Female,Former,0,none,10499,00_normal,malaria,none,True
+73,Female,Never,0,normal,11074,none,urinary tract infection,none,True
+44,Male,Current,0,none,439,00_normal,pneumonia,none,True
+41,Male,Current,1,none,4099,00_normal,acne,none,True
+57,Female,Never,1,none,2485,00_normal,peptic ulcer disease,none,True
+24,Male,Former,1,normal,11093,none,bronchial asthma,none,True
+83,Female,Current,1,none,7793,00_normal,urinary tract infection,none,True
+59,Male,Former,0,none,1795,00_normal,dimorphic hemorrhoids,none,True
+71,Female,Current,0,none,399,00_normal,psoriasis,none,True
+74,Male,Former,0,none,10287,00_normal,malaria,none,True
+42,Male,Former,1,none,2574,00_normal,allergy,malignant,True
+45,Male,Former,1,none,1494,00_normal,psoriasis,none,True
+47,Male,Former,0,none,8679,00_normal,cervical spondylosis,none,True
+82,Female,Former,0,none,8057,00_normal,gastroesophageal reflux disease,none,True
+50,Male,Former,0,none,5440,00_normal,bronchial asthma,none,True
+87,Male,Former,0,none,8422,00_normal,diabetes,none,True
+53,Male,Never,0,none,2629,00_normal,migraine,none,True
+64,Male,Current,0,none,5894,00_normal,varicose veins,none,True
+46,Male,Never,0,none,971,00_normal,impetigo,none,True
+41,Female,Never,0,none,914,00_normal,fungal infection,malignant,True
+69,Female,Never,0,none,4975,00_normal,peptic ulcer disease,none,True
+87,Female,Former,0,none,8791,00_normal,urinary tract infection,none,True
+47,Male,Former,0,none,10707,00_normal,hypertension,none,True
+79,Female,Former,0,none,3742,00_normal,diabetes,benign,True
+87,Male,Former,0,none,3989,00_normal,drug reaction,none,True
+79,Male,Never,0,none,135,00_normal,typhoid,none,True
+76,Male,Current,0,none,6984,00_normal,common cold,none,True
+40,Male,Never,0,none,96,00_normal,allergy,none,True
+69,Male,Never,0,none,9544,00_normal,acne,none,True
+60,Male,Former,0,none,3995,00_normal,peptic ulcer disease,none,True
+69,Male,Never,0,none,2519,00_normal,pneumonia,none,True
+47,Female,Current,0,none,3857,00_normal,varicose veins,none,True
+37,Female,Never,0,none,3706,00_normal,acne,none,True
+72,Male,Current,1,none,8618,00_normal,drug reaction,none,True
+78,Female,Former,0,none,6560,00_normal,urinary tract infection,none,True
+59,Male,Former,0,none,5532,00_normal,drug reaction,none,True
+60,Male,Former,1,none,8249,00_normal,varicose veins,none,True
+68,Female,Former,1,normal,11085,none,peptic ulcer disease,none,True
+79,Male,Former,0,none,1183,00_normal,fungal infection,none,True
+72,Male,Former,0,none,1041,00_normal,urinary tract infection,none,True
+44,Male,Never,0,none,10488,00_normal,urinary tract infection,none,True
+67,Female,Former,0,none,293,00_normal,bronchial asthma,none,True
+84,Male,Never,0,none,3853,00_normal,hypertension,none,True
+46,Female,Current,0,none,9236,00_normal,gastroesophageal reflux disease,none,True
+38,Male,Never,0,none,10755,00_normal,migraine,none,True
+74,Male,Current,0,none,9210,00_normal,chicken pox,malignant,True
+54,Male,Current,0,none,107,00_normal,chicken pox,none,True
+67,Male,Never,1,none,2973,00_normal,migraine,none,True
+70,Female,Former,1,none,4169,00_normal,malaria,none,True
+76,Male,Never,0,none,9143,00_normal,hypertension,none,True
+88,Male,Current,1,none,6957,00_normal,diabetes,none,True
+84,Female,Never,0,none,510,00_normal,diabetes,benign,True
+31,Male,Never,0,none,4176,00_normal,psoriasis,none,True
+86,Female,Former,0,none,1864,00_normal,varicose veins,none,True
+80,Female,Never,0,none,5999,00_normal,arthritis,none,True
+51,Female,Current,1,none,2864,00_normal,fungal infection,malignant,True

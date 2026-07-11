@@ -1,0 +1,1 @@
+Which patients have symptoms of allergy in our database?

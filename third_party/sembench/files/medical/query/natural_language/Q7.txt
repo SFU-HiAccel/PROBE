@@ -1,0 +1,1 @@
+Find patients with any sickness in our database (consider all symptoms, x-ray images, skin moles images, and lung audio recordings)?

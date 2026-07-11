@@ -1,0 +1,10 @@
+{
+    "policy": "MinCost",
+    "execution_strategy": "parallel",
+    "max_workers": 20,
+    "join_parallelism": 20,
+    "verbose": false,
+    "progress": true,
+    "reasoning_effort": null,
+    "available_models": ["GPT_4o_MINI"]
+}
