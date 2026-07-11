@@ -1260,6 +1260,14 @@ def sample_kmeans_stratified(
 _ACTIVESAMPLING_MIN_LR_FIT = 20
 _ACTIVESAMPLING_LAMBDA_CAP = 1.0
 
+# Paper Alg. 4 (§5.2) trains the proxy-expert router with R-fold cross-fitting
+# so every labeled row both anchors the proxy and yields a router target
+# learned without its own label. An alternative 6:4 held-out split (reserve a
+# fixed router partition) is faster but is exactly the "reserve a fixed subset"
+# strategy §5.2 argues against, so it is disabled by default and the router
+# always uses the cross-fit (OOF) path. Set to True to restore the split.
+_ROUTER_USE_HELDOUT_SPLIT = False
+
 
 def _activeSampling_split_budget(total: int, k: int, mode: str) -> List[int]:
     if k <= 1 or total <= 0:
@@ -1836,7 +1844,10 @@ def _activeSampling_version_space_reduction(
     # acc(s) = sum_{k<s} w_k - sum_{k>=s} w_k (so argmin L == argmax acc).
     width = J - I
     if width > 1:
-        remaining_rounds = B2 // B1 if B1 > 0 else 1
+        # Paper Alg. 2: m = max(1, ceil(B_1 / B_batch)). Here B2 is the stage
+        # budget (paper B_1) and B1 the per-round batch (paper B_batch), so the
+        # remaining rounds use ceil division, not floor.
+        remaining_rounds = math.ceil(B2 / B1) if B1 > 0 else 1
         if remaining_rounds <= 1:
             c2 = float(width)
         else:
@@ -2845,7 +2856,7 @@ def predict_with_score_refinement(
     z_smooth, homogeneity_propagation_iters = _diffuse_with_early_exit(
         S, G_init, pinned_idx, pinned_labels,
         alpha=beta, num_iter=num_iter, tol=tol, patience=patience,
-        clip01=True,  # paper Alg. 3 line 53: clip((1-beta)G + beta*S*z, 0, 1) each iter
+        clip01=False,  # paper Alg. 3 Phase 2: f^(t) = (1-beta) f^(0) + beta S f^(t-1), no per-iter clip
     )
     prof["homogeneity_propagation_time"] = time.time() - t0
     prof["homogeneity_propagation_iters"] = homogeneity_propagation_iters
@@ -3408,22 +3419,27 @@ def cluster_proxy_pipeline(
         final_cluster_labels = np.zeros(n_total, dtype=np.int32)
 
         # ----------------------------------------------------------------
-        # Router 6:4 stratified disjoint split (paper §3.4). When the
-        # learned-deferral router is active, split the actively-sampled
-        # labels once into L_proxy (pins the Bias Diffusion + Homogeneity Propagation call below) and a held-out
-        # L_router (trains the router). Stratified to preserve the
-        # positive:negative ratio with a floor of 2 router positives. Because
-        # L_router is excluded from proxy training and propagation pinning,
-        # its propagated scores z^prop are unbiased and need no OOF. Falls
-        # back to the 5-fold OOF path (no override) when a disjoint split is
-        # infeasible (too few labels / positives).
+        # Router training-set construction. Paper Alg. 4 (§5.2) uses R-fold
+        # cross-fitting: the router always trains on out-of-fold propagated
+        # scores over the full labeled set (the OOF path at the router-fit
+        # site below), so every labeled row both anchors the proxy and yields
+        # a router target learned without its own label.
+        #
+        # The optional 6:4 stratified disjoint split below (reserve a held-out
+        # L_router partition) is the "reserve a fixed subset" strategy §5.2
+        # explicitly argues against; it is gated off by
+        # _ROUTER_USE_HELDOUT_SPLIT (default False) and left in place only so
+        # it can be re-enabled for comparison. When disabled (the default),
+        # labeled_indices/values are NOT overridden, so the proxy and
+        # propagation pin the full labeled set and the router-fit site takes
+        # the R-fold OOF cross-fitting branch.
         # ----------------------------------------------------------------
         ld_router_indices = np.zeros(0, dtype=np.int64)
         ld_router_values = np.zeros(0, dtype=np.int32)
         ld_full_labeled_indices = labeled_indices.copy()
         ld_full_labeled_values = labeled_values.copy()
         ld_split_succeeded = False
-        if learned_deferral_active:
+        if learned_deferral_active and _ROUTER_USE_HELDOUT_SPLIT:
             from learned_deferral import stratified_proxy_router_split
 
             proxy_mask_ld, router_mask_ld, ld_split_info = (

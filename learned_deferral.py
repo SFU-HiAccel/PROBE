@@ -19,7 +19,21 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 
 
+# Paper Alg. 4 (§5.2) router feature vector psi = (f_i, nd_i(f), pi_i):
+# propagated score, neighbour-disagreement, normalized ordering-axis rank.
+# This is the default when a caller does not pass feature_names explicitly,
+# so every entry point (Spark operators, direct proxy_filter/proxy_join)
+# matches the paper's 3-feature router rather than the 6-feature superset.
 DEFAULT_DEFERRAL_FEATURES: Tuple[str, ...] = (
+    "z_smooth",
+    "neighbour_disag",
+    "rank_position",
+)
+
+# Superset of feature names the implementation supports. Used only to
+# validate explicitly requested feature_names; the paper uses the 3-feature
+# subset above.
+_ALLOWED_DEFERRAL_FEATURES: Tuple[str, ...] = (
     "z_smooth",
     "z_corrected",
     "similarity",
@@ -40,7 +54,7 @@ def _normalise_feature_names(feature_names: Optional[Sequence[str]]) -> Tuple[st
     if feature_names is None:
         return DEFAULT_DEFERRAL_FEATURES
     names = tuple(str(x) for x in feature_names)
-    unknown = sorted(set(names) - set(DEFAULT_DEFERRAL_FEATURES))
+    unknown = sorted(set(names) - set(_ALLOWED_DEFERRAL_FEATURES))
     if unknown:
         raise ValueError(f"Unknown deferral features: {unknown}")
     if not names:

@@ -1,5 +1,54 @@
 # Changelog
 
+## [Unreleased] - 2026-07-09
+
+### Algorithm–paper consistency
+Audited the live proxy pipeline (`proxy_filter`/`proxy_join` → `cluster_proxy_pipeline`)
+against the SIGMOD submission's Algorithms 1–4 and reconciled the code to the paper.
+
+- **Router now uses R-fold cross-fitting by default (paper Alg. 4 / §5.2).** The
+  default router-training path was a fixed 6:4 held-out disjoint split — exactly the
+  "reserve a fixed subset of labels" strategy §5.2 argues against. The split is now
+  gated behind `cluster_proxy._ROUTER_USE_HELDOUT_SPLIT` (default `False`), so the
+  router always trains on out-of-fold propagated scores over the full labeled set via
+  `_compute_oof_z_smooth_and_corrected` (`R = min(5, n_pos, n_neg)` stratified folds,
+  per-fold proxy retrain + re-propagation). Reverses the previous "6:4 split (#1)"
+  entry below, which reflected an earlier paper draft.
+- **Router feature default is the paper's 3-feature vector (Alg. 4).** When a caller
+  does not pass `feature_names`, `learned_deferral.DEFAULT_DEFERRAL_FEATURES` now
+  yields `(z_smooth, neighbour_disag, rank_position)` = `(f_i, nd_i(f), π_i)` instead
+  of a 6-feature superset. The superset is retained as `_ALLOWED_DEFERRAL_FEATURES`
+  for validating explicitly-requested features. (`run.py` already passed the 3; the
+  Spark operators and direct calls defaulted to 6.)
+- **Homogeneity propagation no longer clips each iteration (paper Alg. 3, Phase 2).**
+  `predict_with_score_refinement` set `clip01=True` on the Phase-2 diffusion; the
+  paper's update `f^(t)=(1−β)f^(0)+β S f^(t−1)` has no per-iteration clip. Now
+  `clip01=False`, matching the paper (Phase-1 bias-diffusion was already unclipped).
+- **Threshold-search round count uses ceil (paper Alg. 2).** `LocateThreshold`
+  (`_activeSampling_version_space_reduction`) computed the geometric shrink exponent
+  with floor division; paper Alg. 2 sets `m = max(1, ⌈B₁/B_batch⌉)`. Now uses
+  `math.ceil`.
+- **Legacy non-paper path flagged.** `proxy_model.sample_active` and
+  `_online_refine` (uniform-pilot + EER sampling with a DAgger-MLP deferral head) do
+  NOT implement the paper; docstring notes now point readers to the paper's
+  implementations in `cluster_proxy.py`.
+
+### Design Rationale
+- Cross-fitting is the paper's stated mechanism for letting each scarce labeled row
+  both anchor the proxy and yield an unbiased router target; the 6:4 split forfeits
+  that under high selectivity, so it is disabled rather than deleted (flip the flag to
+  reproduce the split ablation).
+- The descending-vs-ascending ordering axis and the global-vs-`[I,J]` θ recovery are
+  provably order-equivalent to the paper and were left in code; they are reconciled in
+  the paper text rather than by risky changes to the recursive sampler.
+
+### Notes & Caveats
+- These changes alter numeric outputs of the `learned_deferral` and `refine` paths;
+  re-run the affected `experiments/*.sh` (tables 2/5, figs 1–2/3/5–6) before quoting
+  results.
+- No automated test suite exists in the repo; changes were syntax-checked and the
+  feature-default / router-flag behavior smoke-tested.
+
 ## [Unreleased] - 2026-06-22
 
 ### Documentation

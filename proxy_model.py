@@ -2515,6 +2515,12 @@ def sample_active(
     initial_size: int = 50,
     batch_size: int = 50,
 ) -> Tuple[np.ndarray, np.ndarray]:
+    # NOTE: LEGACY, NON-PAPER PATH. This is a uniform-pilot + uncertainty
+    # sampler and does NOT implement the paper's budget-aware sampling
+    # (Alg. 1/2). The paper's sampler lives in
+    # cluster_proxy.py::sample_activeSampling (reached via
+    # proxy_filter/proxy_join -> cluster_proxy_pipeline with
+    # sampling_method="activeSampling"). Kept only for legacy callers.
     total = len(texts)
     initial_size = min(initial_size, sample_size, total)
 
@@ -2960,6 +2966,13 @@ def _online_refine(
     deferral_dagger_beta: float = 0.00,
 ):
     """Online active learning: refine proxy during inference.
+
+    NOTE: LEGACY, NON-PAPER PATH. This EER-driven online refinement with a
+    DAgger MLP deferral head is NOT the paper's method. The paper's graph
+    label propagation (Alg. 3) and proxy-expert router (Alg. 4) are
+    implemented in cluster_proxy.py (predict_with_score_refinement and the
+    fit_deferral_classifier call site), reached via proxy_filter/proxy_join
+    -> cluster_proxy_pipeline. This function is kept only for legacy callers.
 
     After initial proxy is built from sample_size rows, process remaining
     rows in batches. For proxy-positive predictions, verify with LLM.
