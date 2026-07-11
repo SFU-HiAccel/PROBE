@@ -234,7 +234,7 @@ vllm serve "Qwen/Qwen3-VL-30B-A3B-Instruct" \
   --max-num-seqs 512 \
   --max-num-batched-tokens 32768 \
   --enable-prefix-caching \
-  --allowed-local-media-path "$LASO_DATA_ROOT/SemBench" \
+  --allowed-local-media-path "$LASO_DATA_ROOT/SemBench/" \
   > vllm_server_30b.log 2>&1 &
 
 ```
