@@ -1,4 +1,4 @@
-# PROBE: A Proxy-Based Approximate Semantic Query Engine
+# PROBE: Practical Learned Proxy-Based Execution for Multimodal Semantic Queries
 
 
 PROBE is a proxy-based approximate query processing (AQP) engine for **semantic SQL
