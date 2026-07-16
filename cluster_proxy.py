@@ -2790,12 +2790,19 @@ def predict_with_score_refinement(
         f"n_base_positive={n_base_positive}/{n} (predict_proba >= 0.5)"
     )
 
-    # --- Graph normalization: S = D^(-1/2) W D^(-1/2) ---
+    # --- Graph normalization: row-stochastic P = D^(-1) W (paper Alg. 1,
+    # Phase 0: "row-normalized propagation matrix P"). Row-stochastic P makes
+    # each diffusion step (1-a)x0 + a*P@x a convex combination of values in
+    # [0,1], so both phases stay in [0,1] WITHOUT a per-iteration clip -- which
+    # is exactly why Phase 2 carries no clip. The earlier symmetric normalization
+    # D^(-1/2) W D^(-1/2) has max row-sum > 1 (not a convex combination) and,
+    # combined with the unclipped Phase 2, let the refined score overshoot
+    # outside [0,1], violating the paper's f^(T2) in [0,1]^N contract.
     t0 = time.time()
     deg = np.array(W.sum(axis=1)).flatten()
-    d_inv_sqrt = 1.0 / np.sqrt(np.maximum(deg, 1e-10))
-    D_inv_sqrt = diags(d_inv_sqrt, format="csr")
-    S = D_inv_sqrt @ W @ D_inv_sqrt
+    d_inv = 1.0 / np.maximum(deg, 1e-10)
+    D_inv = diags(d_inv, format="csr")
+    S = D_inv @ W
     prof["graph_norm_time"] = time.time() - t0
 
     pinned_idx = np.asarray(labeled_indices, dtype=np.int64)

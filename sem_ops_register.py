@@ -270,7 +270,7 @@ def sem_topk_impl(
 
     child_logical_plan = self._jdf.logicalPlan()
 
-    scala_helper_class_name = "com.huawei.sparkai.utils.SemTopKPySparkHelper"
+    scala_helper_class_name = "com.probe.sparkai.utils.SemTopKPySparkHelper"
     helper = getattr(jvm, scala_helper_class_name)
     scala_result_df = helper.applySemTopK(
         spark._jsparkSession,

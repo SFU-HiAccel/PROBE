@@ -398,19 +398,19 @@ def get_spark():
         .config("spark.executor.memory", "32g") \
         .config("spark.jars", JAR_PATH) \
         .config("spark.sql.extensions",
-                "com.huawei.sparkai.SemanticTopKPlugin,"
-                "com.huawei.sparkai.SemanticMapPlugin,"
-                "com.huawei.sparkai.SemanticJoinPlugin,"
-                "com.huawei.sparkai.SemanticFilterPlugin,"
-                "com.huawei.sparkai.SemanticAggregatePlugin,"
-                "com.huawei.sparkai.SemanticGroupByPlugin,"
-                "com.huawei.sparkai.ApproximateFilterPlugin,"
-                "com.huawei.sparkai.ApproximateJoinPlugin") \
+                "com.probe.sparkai.SemanticTopKPlugin,"
+                "com.probe.sparkai.SemanticMapPlugin,"
+                "com.probe.sparkai.SemanticJoinPlugin,"
+                "com.probe.sparkai.SemanticFilterPlugin,"
+                "com.probe.sparkai.SemanticAggregatePlugin,"
+                "com.probe.sparkai.SemanticGroupByPlugin,"
+                "com.probe.sparkai.ApproximateFilterPlugin,"
+                "com.probe.sparkai.ApproximateJoinPlugin") \
         .config("spark.driver.extraClassPath", JAR_PATH) \
         .config("spark.executor.extraClassPath", JAR_PATH) \
         .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
         .config("spark.sql.optimizer.columnPruning.enabled", "false") \
-        .config("spark.huawei.sparkai.disableFilterReorder", "true") \
+        .config("spark.probe.sparkai.disableFilterReorder", "true") \
         .config("spark.default.parallelism", "1") \
         .getOrCreate()
     return spark
