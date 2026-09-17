@@ -34,6 +34,12 @@ from pyspark.sql.types import MapType, StructType, ArrayType
 from proxy_model import get_last_profiling, get_last_token_usage, reset_token_usage
 import sem_ops_register  # noqa: F401  -- import registers df.sem_filter / df.sem_join (side effect)
 from router_cap import split_total_budget
+from learned_calibration import (
+    LEARNED_CALIBRATION_MODE,
+    LEARNED_CALIBRATION_RESULT_KEYS,
+    LearnedCalibrationConfig,
+    learned_calibration_total_budget,
+)
 
 MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct")
 #MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3.6-35B-A3B")
@@ -182,6 +188,10 @@ KNN_K_VALUES = ["auto"]
 RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "43"))
 # Patch R1: fraction of the total LLM budget the router may spend (env: LASO_ROUTER_CAP_FRAC).
 ROUTER_CAP_FRAC = float(os.environ.get("LASO_ROUTER_CAP_FRAC", "0.3"))
+# Learned calibration (design3 §2): total budget B, floor(0.6B) active sampling,
+# floor(0.1B) stratified calibration sample, the rest for fallback.
+LC_SAMPLE_FRAC = float(os.environ.get("LASO_LC_SAMPLE_FRAC", "0.6"))
+LC_CALIB_FRAC = float(os.environ.get("LASO_LC_CALIB_FRAC", "0.1"))
 
 # Active-learning sampler config (paper §3).
 ACTIVESAMPLING_VS_RATIO = 0.5            # explore fraction rho (env: LASO_VS_RATIO)
@@ -202,7 +212,7 @@ def _cascade_decision_enabled(decision_mode: Optional[str] = None) -> bool:
     mode = str(decision_mode if decision_mode is not None else "learned_deferral")
     if mode == "none":
         return False
-    return bool(enable_defer or mode == "learned_deferral")
+    return bool(enable_defer or mode in ("learned_deferral", LEARNED_CALIBRATION_MODE))
 
 
 LLM_BATCH_SIZE = 128
@@ -245,6 +255,8 @@ def _decision_mode_for_ablation(ablation_label: str) -> str:
     label = str(ablation_label)
     if label.endswith("+trust_proxy"):
         return "none"
+    if label.endswith("+learned_calibration"):
+        return LEARNED_CALIBRATION_MODE
     # +dasp_topk is unified into the learned-deferral router (the DASP/top-k
     # decision path was removed); both map to the same policy.
     if label.endswith("+learned_deferral") or label.endswith("+dasp_topk"):
@@ -263,6 +275,16 @@ def _deferral_policy_for_ablation(ablation_label: str) -> str:
         return "learned_deferral"
     return mode
 
+
+def _learned_calibration_config(n_items: int, budget_pct: float) -> LearnedCalibrationConfig:
+    """Per-run config for the +learned_calibration ablation (total-budget semantics)."""
+    return LearnedCalibrationConfig(
+        total_budget=learned_calibration_total_budget(n_items, budget_pct),
+        sample_frac=LC_SAMPLE_FRAC,
+        calib_frac=LC_CALIB_FRAC,
+        seed=RANDOM_SEED,
+    )
+
 spark = None
 all_results = []
 results_dir = "./results/activeSampling_grid/"
@@ -277,7 +299,7 @@ INCLUDE_NO_OPT = os.environ.get("LASO_INCLUDE_NO_OPT", "0").lower() in {"1", "tr
 # ---------------------------------------------------------------------------
 _KNOWN_SAMPLERS = {"activeSampling", "random", "top_k", "uqe_active"}
 _KNOWN_ABLATION_PARTS = {"refine", "lr_only", "trust_proxy",
-                         "learned_deferral", "dasp_topk"}
+                         "learned_deferral", "dasp_topk", "learned_calibration"}
 
 
 def _parse_ablation_label(label):
@@ -1269,10 +1291,17 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
                        total_pairs, mode, budget_pct, feature_mode, knn_k_val,
                        ablation_label, sampling_strategy, refine_enabled, exp_idx,
                        embedding_model=EMBEDDING_MODEL):
-    _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
-    _budget_total, _budget, _router_cap = split_total_budget(
-        total_pairs, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
-    print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
+    _lc_cfg = None
+    if _decision_mode_for_ablation(ablation_label) == LEARNED_CALIBRATION_MODE:
+        _lc_cfg = _learned_calibration_config(total_pairs, budget_pct)
+        _router_on, _router_cap, _budget = False, 0, _lc_cfg.sample_budget
+        print(f"  budget split (learned_calibration): total={_lc_cfg.total_budget} "
+              f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} fallback=remaining")
+    else:
+        _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
+        _budget_total, _budget, _router_cap = split_total_budget(
+            total_pairs, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
+        print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
     _knn = 0 if knn_k_val == "auto" else int(knn_k_val)
     cfg = _effective_cfg(query_tag, ablation_label, default_threshold=0.5)
     decision_mode = _decision_mode_for_ablation(ablation_label)
@@ -1313,6 +1342,7 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
         defer_enabled=_cascade_decision_enabled(decision_mode),
         router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
+        learned_calibration_config=_lc_cfg,
         deferral_features=DEFERRAL_FEATURES,
         lr_C=cfg["lr_C"],
         exclude_self_pairs=(query_tag in {"ecomm_q9", "movie_q5", "movie_q7", "match122"}),
@@ -1327,10 +1357,17 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
                           total_rows, mode, budget_pct, feature_mode, knn_k_val,
                           ablation_label, sampling_strategy, refine_enabled, exp_idx,
                           embedding_model=EMBEDDING_MODEL):
-    _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
-    _budget_total, _budget, _router_cap = split_total_budget(
-        total_rows, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
-    print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
+    _lc_cfg = None
+    if _decision_mode_for_ablation(ablation_label) == LEARNED_CALIBRATION_MODE:
+        _lc_cfg = _learned_calibration_config(total_rows, budget_pct)
+        _router_on, _router_cap, _budget = False, 0, _lc_cfg.sample_budget
+        print(f"  budget split (learned_calibration): total={_lc_cfg.total_budget} "
+              f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} fallback=remaining")
+    else:
+        _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
+        _budget_total, _budget, _router_cap = split_total_budget(
+            total_rows, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
+        print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
     _knn = 0 if knn_k_val == "auto" else int(knn_k_val)
     cfg = _effective_cfg(query_tag, ablation_label, default_threshold=0.5)
     decision_mode = _decision_mode_for_ablation(ablation_label)
@@ -1372,6 +1409,7 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
         defer_enabled=_cascade_decision_enabled(decision_mode),
         router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
+        learned_calibration_config=_lc_cfg,
         deferral_features=DEFERRAL_FEATURES,
         lr_C=cfg["lr_C"],
         knn_k=_knn,
@@ -1671,6 +1709,9 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
     out["deferral_chosen_hidden_dims"] = cluster_prof.get("deferral_chosen_hidden_dims")
     out["deferral_chosen_alpha"] = cluster_prof.get("deferral_chosen_alpha")
     out["deferral_fallback_reason"] = cluster_prof.get("deferral_fallback_reason")
+    if cluster_prof.get("defer_decision_mode") == LEARNED_CALIBRATION_MODE:
+        for _key in LEARNED_CALIBRATION_RESULT_KEYS:
+            out[_key] = cluster_prof.get(_key)
     # DASP decision-source breakdown: how many of the final positive /
     # negative predictions were decided by the proxy vs by the LLM
     # (split into B_proxy / B_defer / verify subsystems).
