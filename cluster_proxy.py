@@ -2725,6 +2725,7 @@ def predict_with_score_refinement(
     imbalance_strategy: str = "balanced",
     lr_C: float = 1.0,
     base_threshold: Optional[float] = None,
+    return_logit: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     """Bias Diffusion + Homogeneity Propagation: LR base + residual propagation + prediction smoothing.
 
@@ -2757,6 +2758,8 @@ def predict_with_score_refinement(
         prof["lr_predict_time"] = time.time() - t0
         prof["lr_training_time"] = prof["lr_fit_time"] + prof["lr_predict_time"]
         prof["base_single_class"] = True
+        if return_logit:
+            prof["lr_logit"] = None
     else:
         _cw = None if imbalance_strategy == "not_balanced" else imbalance_strategy
         lr = LogisticRegression(
@@ -2779,6 +2782,9 @@ def predict_with_score_refinement(
         prof["lr_predict_time"] = time.time() - t_pred
         prof["lr_training_time"] = prof["lr_fit_time"] + prof["lr_predict_time"]
         prof["base_single_class"] = False
+        if return_logit:
+            # Raw LR logit for learned calibration (design3 §3); not clipped.
+            prof["lr_logit"] = np.asarray(lr.decision_function(embeddings), dtype=np.float64)
     # base_probas is now a continuous score in [0, 1] (predict_proba); count
     # predicted positives at the 0.5 cutoff for diagnostics only. The
     # base_threshold percentile knob only affects the FINAL cutoff on z_smooth
@@ -3176,6 +3182,89 @@ def _predict_with_weighted_lr(
 # ---------------------------------------------------------------------------
 
 
+def _run_learned_calibration_stage(
+    lr_input: np.ndarray,
+    W: csr_matrix,
+    texts: List[Union[str, list]],
+    label_fn: Callable[[List[Union[str, list]]], np.ndarray],
+    labeled_indices: np.ndarray,
+    labeled_values: np.ndarray,
+    positive_mask: np.ndarray,
+    lr_logit: Optional[np.ndarray],
+    *,
+    config: Any,
+    confidence_threshold: float,
+    diffusion_alpha: float,
+    propagation_beta: float,
+    refine_num_iter: int,
+    refine_tol: float,
+    refine_patience: int,
+    imbalance_strategy: str,
+    lr_C: float,
+    base_threshold: Optional[float],
+    profiling: Dict[str, Any],
+) -> np.ndarray:
+    """Learned calibration router (design3.md). Returns the final positive mask.
+
+    Writes ``lc_*`` diagnostics plus the ``defer_*`` keys run.py already reads,
+    so ``policy_rollback_to_llm_count`` counts the A and D calls.
+    """
+    from learned_calibration import OofFeatures, compute_oof_features, run_learned_calibration
+
+    t0 = time.time()
+
+    def refine_fn(train_idx: np.ndarray, train_y: np.ndarray):
+        mask, _, prof = predict_with_score_refinement(
+            lr_input, W, train_idx, train_y,
+            confidence_threshold=confidence_threshold,
+            alpha=diffusion_alpha, beta=propagation_beta,
+            num_iter=refine_num_iter, tol=refine_tol, patience=refine_patience,
+            imbalance_strategy=imbalance_strategy, lr_C=lr_C,
+            base_threshold=base_threshold, return_logit=True,
+        )
+        return mask, prof.get("lr_logit")
+
+    def label_rows(row_ids: np.ndarray) -> np.ndarray:
+        return np.asarray(label_fn([texts[int(i)] for i in row_ids]), dtype=np.int32)
+
+    if lr_logit is None:
+        oof = OofFeatures(None, None, "proxy_logit_unavailable")
+    else:
+        oof = compute_oof_features(
+            refine_fn, labeled_indices, labeled_values,
+            n_folds=config.n_folds, seed=config.seed,
+        )
+    result = run_learned_calibration(
+        x=lr_logit,
+        h=np.asarray(positive_mask, dtype=np.float64),
+        labeled_indices=labeled_indices,
+        labeled_values=labeled_values,
+        oof=oof,
+        label_rows=label_rows,
+        config=config,
+    )
+    router_calls = int(result.calib_idx.size + result.verify_idx.size)
+    elapsed = time.time() - t0
+    profiling.update(result.diagnostics)
+    profiling["lc_time_s"] = float(elapsed)
+    profiling["defer_enabled"] = True
+    profiling["defer_decision_mode"] = "learned_calibration"
+    profiling["defer_verify_uncertain"] = True
+    profiling["defer_verify_count"] = router_calls
+    profiling["defer_verify_positive"] = int(result.final_pos[result.calib_idx].sum()
+                                             + result.final_pos[result.verify_idx].sum())
+    profiling["defer_candidates_before_cap"] = router_calls
+    profiling["defer_router_cap"] = max(0, int(config.total_budget) - int(len(labeled_indices)))
+    profiling["budget_sample_size"] = int(config.sample_budget)
+    profiling["defer_total_time"] = float(elapsed)
+    logger.info(
+        f"[learned_calibration] status={result.status} reason={result.diagnostics.get('lc_reason')} "
+        f"A={result.calib_idx.size} D={result.verify_idx.size} "
+        f"calls={result.diagnostics.get('lc_calls_total')}/{config.total_budget}"
+    )
+    return result.final_pos
+
+
 def cluster_proxy_pipeline(
     embeddings: np.ndarray,
     texts: List[Union[str, list]],
@@ -3223,6 +3312,7 @@ def cluster_proxy_pipeline(
     verify_uncertain: bool = True,
     router_max_calls: Optional[int] = None,
     decision_mode: str = "force_label",
+    learned_calibration_config: Optional[Any] = None,
     deferral_features: Optional[Sequence[str]] = None,
     # Router π_i rank axis (paper §3.4): "blended" = rank on the sampler's
     # final blended ordering axis σ (default); "similarity" = force rank on raw
@@ -3267,6 +3357,15 @@ def cluster_proxy_pipeline(
     profiling: Dict[str, Any] = {}
     vllm_time_acc = [0.0]
     n_total = embeddings.shape[0]
+
+    if str(decision_mode) == "learned_calibration":
+        if learned_calibration_config is None:
+            raise ValueError("decision_mode='learned_calibration' requires learned_calibration_config")
+        if sampling_method != "activeSampling" or not refine_enabled or not defer_enabled:
+            raise ValueError(
+                "decision_mode='learned_calibration' requires sampling_method='activeSampling', "
+                "refine_enabled=True and defer_enabled=True"
+            )
 
     raw_label_fn = label_fn_factory()
 
@@ -3595,6 +3694,7 @@ def cluster_proxy_pipeline(
             imbalance_strategy=_refine_imbalance,
             lr_C=lr_C,
             base_threshold=base_threshold,
+            return_logit=(str(decision_mode) == "learned_calibration"),
         )
         refine_total = time.time() - t0
         profiling["propagation_time"] = (
@@ -3797,6 +3897,24 @@ def cluster_proxy_pipeline(
                 for key, value in decision.info.items():
                     profiling[f"deferral_{key}"] = value
                 positive_mask = final_pos
+            elif str(decision_mode) == "learned_calibration":
+                positive_mask = _run_learned_calibration_stage(
+                    lr_input, _prebuilt_W, texts, label_fn,
+                    labeled_indices, labeled_values, positive_mask,
+                    refine_prof.get("lr_logit"),
+                    config=learned_calibration_config,
+                    confidence_threshold=confidence_threshold,
+                    diffusion_alpha=diffusion_alpha,
+                    propagation_beta=propagation_beta,
+                    refine_num_iter=refine_num_iter,
+                    refine_tol=refine_tol,
+                    refine_patience=refine_patience,
+                    imbalance_strategy=_refine_imbalance,
+                    lr_C=lr_C,
+                    base_threshold=base_threshold,
+                    profiling=profiling,
+                )
+        refine_prof.pop("lr_logit", None)
         if isinstance(refine_prof.get("z_corrected"), np.ndarray):
             refine_prof["z_corrected_shape"] = tuple(
                 int(x) for x in refine_prof["z_corrected"].shape
