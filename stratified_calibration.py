@@ -1,21 +1,29 @@
 """Score-stratified calibration sample A for learned calibration (design3 §4).
 
 Rows outside the active sample L are split into equal-width bins of the frozen
-proxy score s. Every non-empty stratum receives at least one draw, the rest of
-the quota is spread evenly (capped by stratum size), and each drawn row carries
-the inverse inclusion weight N_j / n_j.
+proxy score s. Draws are spread evenly across strata (capped by stratum size,
+leftovers low score first) and each drawn row carries the inverse inclusion
+weight N_j / n_j.
+
+The strata are fixed once, so A can grow in rounds (the insufficient-evidence
+fallback): each round draws without replacement from the rows of each stratum
+not sampled yet, keeping the cumulative per-stratum counts as equal as
+possible. After any number of rounds, A within stratum j is a simple random
+sample of size n_j (cumulative) from N_j rows, so weights are N_j / n_j.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 
 __all__ = [
     "StratifiedSample",
+    "StratifiedDesign",
     "build_score_strata",
     "allocate_equal",
+    "allocate_cumulative",
     "draw_stratified_sample",
 ]
 
@@ -69,23 +77,86 @@ def build_score_strata(
     return strata
 
 
+def allocate_cumulative(sizes: np.ndarray, counts: np.ndarray, m: int) -> np.ndarray:
+    """Add ``m`` draws to ``counts``, one at a time, to the open stratum with the fewest draws.
+
+    Ties go to the lower-score stratum. Returns the new cumulative counts.
+    """
+    sizes = np.asarray(sizes, dtype=np.int64).reshape(-1)
+    new_counts = np.asarray(counts, dtype=np.int64).reshape(-1).copy()
+    if new_counts.shape != sizes.shape or np.any(new_counts > sizes) or np.any(new_counts < 0):
+        raise ValueError("counts must be within [0, sizes]")
+    if m < 0 or m > int((sizes - new_counts).sum()):
+        raise ValueError(f"m={m} exceeds remaining capacity {int((sizes - new_counts).sum())}")
+    for _ in range(int(m)):
+        open_strata = np.flatnonzero(new_counts < sizes)
+        j = open_strata[int(np.argmin(new_counts[open_strata]))]
+        new_counts[j] += 1
+    return new_counts
+
+
 def allocate_equal(sizes: np.ndarray, m: int) -> np.ndarray:
     """Split ``m`` draws evenly across strata, capped by size, leftovers low-score first."""
     sizes = np.asarray(sizes, dtype=np.int64).reshape(-1)
     if m < sizes.size or m > int(sizes.sum()):
         raise ValueError(f"m={m} must be in [{sizes.size}, {int(sizes.sum())}]")
-    counts = np.zeros_like(sizes)
-    remaining = int(m)
-    while remaining > 0:
-        open_strata = np.flatnonzero(counts < sizes)
-        share = remaining // open_strata.size
-        if share == 0:
-            counts[open_strata[:remaining]] += 1
-            break
-        add = np.minimum(sizes[open_strata] - counts[open_strata], share)
-        counts[open_strata] += add
-        remaining -= int(add.sum())
-    return counts
+    return allocate_cumulative(sizes, np.zeros_like(sizes), m)
+
+
+@dataclass(frozen=True)
+class StratifiedDesign:
+    """Fixed score strata plus the rows sampled from each so far (immutable)."""
+
+    strata: Tuple[np.ndarray, ...]   # row ids per stratum, fixed
+    sampled: Tuple[np.ndarray, ...]  # sorted row ids drawn so far per stratum
+
+    @classmethod
+    def build(cls, pool_idx: np.ndarray, scores: np.ndarray, *, n_bins: int, max_strata: int) -> "StratifiedDesign":
+        strata = tuple(build_score_strata(pool_idx, scores, n_bins, max_strata))
+        return cls(strata=strata, sampled=tuple(np.zeros(0, dtype=np.int64) for _ in strata))
+
+    @property
+    def sizes(self) -> np.ndarray:
+        return np.array([s.size for s in self.strata], dtype=np.int64)
+
+    @property
+    def counts(self) -> np.ndarray:
+        return np.array([s.size for s in self.sampled], dtype=np.int64)
+
+    @property
+    def remaining(self) -> int:
+        return int((self.sizes - self.counts).sum())
+
+    def draw(self, m: int, rng: np.random.Generator) -> Tuple["StratifiedDesign", np.ndarray]:
+        """Draw up to ``m`` new rows; returns the updated design and the new row ids."""
+        m = max(0, min(int(m), self.remaining))
+        if m == 0:
+            return self, np.zeros(0, dtype=np.int64)
+        target = allocate_cumulative(self.sizes, self.counts, m)
+        new_sampled, new_rows = [], []
+        for stratum, taken, want in zip(self.strata, self.sampled, target.tolist()):
+            extra = want - taken.size
+            if extra > 0:
+                available = np.setdiff1d(stratum, taken, assume_unique=True) if taken.size else stratum
+                chosen = rng.choice(available, size=extra, replace=False).astype(np.int64)
+                new_rows.append(np.sort(chosen))
+                taken = np.sort(np.concatenate([taken, chosen]))
+            new_sampled.append(taken)
+        rows = np.concatenate(new_rows) if new_rows else np.zeros(0, dtype=np.int64)
+        return StratifiedDesign(strata=self.strata, sampled=tuple(new_sampled)), rows
+
+    def sample(self) -> StratifiedSample:
+        """All rows drawn so far with weights N_j / n_j (strata with n_j = 0 contribute nothing)."""
+        if not self.strata:
+            return _empty_sample()
+        weights = [np.full(taken.size, stratum.size / taken.size, dtype=np.float64)
+                   for stratum, taken in zip(self.strata, self.sampled) if taken.size]
+        return StratifiedSample(
+            indices=np.concatenate(self.sampled).astype(np.int64),
+            weights=np.concatenate(weights) if weights else np.zeros(0, dtype=np.float64),
+            stratum_sizes=self.sizes,
+            sample_counts=self.counts,
+        )
 
 
 def draw_stratified_sample(
@@ -101,17 +172,6 @@ def draw_stratified_sample(
     m = min(int(m), int(pool_idx.size))
     if m <= 0:
         return _empty_sample()
-    strata = build_score_strata(pool_idx, scores, n_bins, max_strata=m)
-    sizes = np.array([st.size for st in strata], dtype=np.int64)
-    counts = allocate_equal(sizes, m)
-    picked, weights = [], []
-    for stratum, n_j in zip(strata, counts.tolist()):
-        chosen = rng.choice(stratum, size=n_j, replace=False)
-        picked.append(np.sort(chosen).astype(np.int64))
-        weights.append(np.full(n_j, stratum.size / n_j, dtype=np.float64))
-    return StratifiedSample(
-        indices=np.concatenate(picked),
-        weights=np.concatenate(weights),
-        stratum_sizes=sizes,
-        sample_counts=counts,
-    )
+    design = StratifiedDesign.build(pool_idx, scores, n_bins=n_bins, max_strata=m)
+    design, _ = design.draw(m, rng)
+    return design.sample()

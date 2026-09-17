@@ -76,3 +76,60 @@ class TestDrawStratifiedSample:
         # strata sizes (10, 2), quota 4 -> counts (2, 2): pi = 0.2 and 1.0
         assert np.allclose(hits[:10] / n_rep, 0.2, atol=0.03)
         assert np.allclose(hits[10:] / n_rep, 1.0)
+
+
+from stratified_calibration import StratifiedDesign, allocate_cumulative  # noqa: E402
+
+
+class TestAllocateCumulative:
+    def test_equalizes_cumulative_counts_low_score_first(self):
+        assert allocate_cumulative(np.array([5, 5, 5]), np.array([2, 1, 1]), 2).tolist() == [2, 2, 2]
+        assert allocate_cumulative(np.array([5, 5, 5]), np.array([2, 2, 2]), 1).tolist() == [3, 2, 2]
+
+    def test_respects_capacity(self):
+        assert allocate_cumulative(np.array([1, 5, 5]), np.array([1, 1, 1]), 4).tolist() == [1, 3, 3]
+
+    def test_fewer_draws_than_strata_is_allowed(self):
+        assert allocate_cumulative(np.array([4, 4, 4]), np.zeros(3, dtype=np.int64), 1).tolist() == [1, 0, 0]
+
+    def test_matches_allocate_equal_from_zero(self):
+        sizes = np.array([1, 5, 5])
+        assert allocate_cumulative(sizes, np.zeros(3, dtype=np.int64), 7).tolist() == allocate_equal(sizes, 7).tolist()
+
+    def test_rejects_more_draws_than_remaining_capacity(self):
+        with pytest.raises(ValueError):
+            allocate_cumulative(np.array([2, 2]), np.array([2, 1]), 2)
+
+
+class TestStratifiedDesignRounds:
+    def test_rounds_never_repeat_rows_and_weights_track_cumulative_counts(self):
+        rng = np.random.default_rng(0)
+        scores = rng.random(500)
+        pool = np.arange(500)
+        design = StratifiedDesign.build(pool, scores, n_bins=10, max_strata=10)
+        seen = []
+        for m in (10, 10, 7):
+            design, new_rows = design.draw(m, rng)
+            assert new_rows.size == m
+            seen.extend(new_rows.tolist())
+        assert len(seen) == len(set(seen)) == 27
+        sample = design.sample()
+        assert sorted(sample.indices.tolist()) == sorted(seen)
+        assert sample.weights.sum() == pytest.approx(500)
+        assert np.all(sample.sample_counts == np.array([s.size for s in design.sampled]))
+
+    def test_draw_is_capped_by_remaining_rows(self):
+        design = StratifiedDesign.build(np.arange(6), np.linspace(0, 1, 6), n_bins=2, max_strata=2)
+        design, first = design.draw(4, np.random.default_rng(1))
+        design, second = design.draw(99, np.random.default_rng(2))
+        assert first.size == 4 and second.size == 2
+        assert design.remaining == 0
+        assert np.allclose(design.sample().weights, 1.0)
+
+    def test_first_round_matches_draw_stratified_sample(self):
+        scores = np.random.default_rng(3).random(300)
+        a = draw_stratified_sample(np.arange(300), scores, 20, n_bins=10, rng=np.random.default_rng(4))
+        design = StratifiedDesign.build(np.arange(300), scores, n_bins=10, max_strata=20)
+        design, _ = design.draw(20, np.random.default_rng(4))
+        b = design.sample()
+        assert np.array_equal(a.indices, b.indices) and np.allclose(a.weights, b.weights)
