@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased] - 2026-09-16
+
+### Features
+- **Learned calibration decision layer (opt-in).** Ablation suffix `+learned_calibration`
+  (e.g. `LASO_ABLATIONS="activeSampling+refine+learned_calibration"`) selects
+  `decision_mode="learned_calibration"`: a score-stratified calibration sample A
+  (`stratified_calibration.py`), an A+L weighted Platt calibrator on the raw LR logit
+  and refined label with an A-only intercept correction (`weighted_calibrator.py`),
+  and exact prefix-sum dual thresholds under the remaining budget
+  (`budgeted_calibrated_router.py`), orchestrated by `learned_calibration.py`.
+- New result columns `lc_*` (this mode only); `policy_rollback_to_llm_count` = |A| + |D|.
+- Env knobs: `LASO_LC_SAMPLE_FRAC` (0.6), `LASO_LC_CALIB_FRAC` (0.1).
+
+### Design Rationale
+- Total-budget semantics (`|L| + |A| + |D| <= B`) instead of R1's `B + router_cap`, as
+  required by design3 §2.
+- A carries known inclusion probabilities, so its weighted loss and the intercept
+  correction are not biased by the active sampler's boundary enrichment; L is still used
+  (weight λ, out-of-fold features, source offset δ) to reduce small-sample variance.
+- Algorithm modules take proxy retraining and LLM labelling as callables, so they are
+  tested offline without Spark or vLLM.
+
+### Notes & Caveats
+- Existing modes are unchanged: `predict_with_score_refinement(return_logit=False)` and
+  `learned_calibration_config=None` are the defaults; no new columns for other modes.
+- The active sampler's 15-call floor can exceed `floor(0.6B)` at tiny budgets; the
+  overrun is reported in `lc_budget_overrun`, and A/D then receive no calls.
+- `label_rows_with_llm` maps persistent request failures to label 0 and does not report
+  them, so failed calibration calls cannot yet be detected (design3 §2 incomplete-sample rule).
+- One allocation, one execution; batched re-planning (design3 §7.3) is not implemented.
+- Quality estimates (`lc_planned_f1`, `lc_estimated_f1`) are model-based, not guarantees.
+
 ## [Unreleased] - 2026-07-09
 
 ### Algorithm–paper consistency
