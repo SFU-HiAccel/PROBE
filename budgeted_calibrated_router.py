@@ -60,8 +60,10 @@ def plan_dual_threshold(
 ) -> RoutingPlan:
     """Choose which unverified rows to verify with at most ``budget`` LLM calls.
 
-    ``p``, ``s`` and ``h`` are aligned with ``row_idx``. Ties in ``s`` are broken
-    by row id, so exactly ``min(budget, len(row_idx))`` rows are returned.
+    ``p``, ``s`` and ``h`` are aligned with ``row_idx``. ``s`` is any ordering key
+    monotone in ``p`` within each ``h`` group (e.g. the raw proxy logit); ``tau_plus``
+    and ``tau_minus`` are reported on the same scale. Ties in ``s`` are broken by row
+    id, so exactly ``min(budget, len(row_idx))`` rows are returned.
     """
     row_idx = np.asarray(row_idx, dtype=np.int64)
     p = np.asarray(p, dtype=np.float64)

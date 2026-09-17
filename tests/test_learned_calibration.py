@@ -133,3 +133,26 @@ class TestRunLearnedCalibration:
                                       oof=OofFeatures(None, None, "skipped"), label_rows=labeller, config=cfg)
         assert labeller.rows == []
         assert res.diagnostics["lc_budget_overrun"] == labeled.size - 100
+
+
+def test_routing_orders_rows_by_raw_logit_not_saturated_probability(monkeypatch):
+    import learned_calibration as lc
+
+    x, h, y_true, labeled = _world(seed=10)
+    x = x * 30.0  # push many logits past float64 sigmoid saturation
+    captured = {}
+    real_plan = lc.plan_dual_threshold
+
+    def spy(row_idx, p, s, h_arg, counts, budget):
+        captured["rows"], captured["key"] = row_idx, s
+        return real_plan(row_idx, p, s, h_arg, counts, budget)
+
+    monkeypatch.setattr(lc, "plan_dual_threshold", spy)
+    res = run_learned_calibration(x=x, h=h, labeled_indices=labeled, labeled_values=y_true[labeled],
+                                  oof=OofFeatures(None, None, "skipped"),
+                                  label_rows=_CountingLabeller(y_true),
+                                  config=LearnedCalibrationConfig(total_budget=400, seed=11))
+    assert res.status == "routed"
+    assert np.array_equal(captured["key"], x[captured["rows"]])
+    tau = res.diagnostics["lc_tau_plus"]
+    assert np.isnan(tau) or 0.0 <= tau <= 1.0

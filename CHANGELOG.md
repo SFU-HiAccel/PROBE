@@ -29,6 +29,13 @@
   overrun is reported in `lc_budget_overrun`, and A/D then receive no calls.
 - `label_rows_with_llm` maps persistent request failures to label 0 and does not report
   them, so failed calibration calls cannot yet be detected (design3 §2 incomplete-sample rule).
+- `lc_calls_*` count LLM-labelled rows, not request attempts: HTTP retries inside
+  `label_rows_with_llm` are not charged to B (design3 §2 charges every attempt). Fixing this
+  needs attempt-level accounting in the shared request layer; cross-check with
+  `vllm_requests_actual`.
+- `cluster_proxy_pipeline` rejects `sample_size > learned_calibration_config.sample_budget`.
+- Dual-threshold ordering uses the raw proxy logit (sigmoid saturates for |x| > ~37);
+  `lc_tau_plus` / `lc_tau_minus` are reported as probabilities.
 - One allocation, one execution; batched re-planning (design3 §7.3) is not implemented.
 - Quality estimates (`lc_planned_f1`, `lc_estimated_f1`) are model-based, not guarantees.
 

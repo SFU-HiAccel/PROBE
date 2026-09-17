@@ -91,3 +91,13 @@ class TestPipelineSwitch:
         emb, sims, texts, y = _synthetic()
         with pytest.raises(ValueError, match="learned_calibration_config"):
             _run(emb, sims, texts, _factory(y, []), sample_size=60, decision_mode="learned_calibration")
+
+
+def test_sample_size_above_config_sample_budget_is_rejected():
+    emb, sims, texts, y = _synthetic()
+    calls = []
+    cfg = LearnedCalibrationConfig(total_budget=30, seed=0)
+    with pytest.raises(ValueError, match="sample_budget"):
+        _run(emb, sims, texts, _factory(y, calls), sample_size=120,
+             decision_mode="learned_calibration", learned_calibration_config=cfg)
+    assert calls == []

@@ -3366,6 +3366,11 @@ def cluster_proxy_pipeline(
                 "decision_mode='learned_calibration' requires sampling_method='activeSampling', "
                 "refine_enabled=True and defer_enabled=True"
             )
+        if int(sample_size) > int(learned_calibration_config.sample_budget):
+            raise ValueError(
+                f"sample_size={int(sample_size)} exceeds learned_calibration_config.sample_budget="
+                f"{int(learned_calibration_config.sample_budget)}"
+            )
 
     raw_label_fn = label_fn_factory()
 

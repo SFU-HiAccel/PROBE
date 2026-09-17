@@ -220,7 +220,9 @@ def run_learned_calibration(
         params = fit.params
         p = predict_proba(params, x[unverified], h[unverified])
         counts = expected_counts(p, h[unverified], n_verified_pos=int(y_known[verified].sum()))
-        plan = plan_dual_threshold(unverified, p, s[unverified], h[unverified], counts, budget_left)
+        # Order by the raw logit: p is monotone in x within each h group, and x does
+        # not saturate the way sigmoid(x) does for |x| > ~37.
+        plan = plan_dual_threshold(unverified, p, x[unverified], h[unverified], counts, budget_left)
         d_idx = plan.verify_idx
         status = "routed"
         diag.update({
@@ -228,7 +230,7 @@ def run_learned_calibration(
             "lc_t": params.t, "lc_b_final": params.b_final,
             "lc_intercept_residual": fit.diagnostics.get("intercept_residual"),
             "lc_k_plus": plan.k_plus, "lc_k_minus": plan.k_minus,
-            "lc_tau_plus": plan.tau_plus, "lc_tau_minus": plan.tau_minus,
+            "lc_tau_plus": float(expit(plan.tau_plus)), "lc_tau_minus": float(expit(plan.tau_minus)),
             "lc_planned_f1": plan.f_tilde,
         })
     else:
