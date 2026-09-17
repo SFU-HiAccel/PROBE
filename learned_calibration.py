@@ -20,7 +20,7 @@ from sklearn.model_selection import StratifiedKFold
 
 from budgeted_calibrated_router import apply_verified_labels, expected_counts, plan_dual_threshold
 from router_cap import MIN_TOTAL_BUDGET
-from stratified_calibration import draw_stratified_sample
+from stratified_calibration import StratifiedDesign
 from weighted_calibrator import calibrate, predict_proba
 
 __all__ = [
@@ -43,7 +43,7 @@ LEARNED_CALIBRATION_RESULT_KEYS = (
     "lc_n_strata", "lc_A_pos", "lc_L_pos", "lc_ess_pos", "lc_max_pos_weight_share",
     "lc_lambda_used", "lc_oof_reason", "lc_a", "lc_b", "lc_c", "lc_delta", "lc_t", "lc_b_final",
     "lc_intercept_residual", "lc_k_plus", "lc_k_minus", "lc_tau_plus", "lc_tau_minus",
-    "lc_planned_f1", "lc_estimated_f1", "lc_D_pos", "lc_time_s",
+    "lc_planned_f1", "lc_estimated_f1", "lc_D_pos", "lc_time_s", "lc_fallback_rounds",
 )
 
 # refine_fn(train_idx, train_y) -> (refined_label_mask[N], lr_logit[N] or None)
@@ -181,37 +181,55 @@ def run_learned_calibration(
         "lc_oof_reason": oof.reason,
     }
 
-    # Stage 2: stratified calibration sample A on the frozen proxy score s
+    # Stages 2-3: stratified calibration sample A on the frozen proxy score s, drawn
+    # in rounds of calib_budget from fixed strata. After each round the calibrator
+    # is refit on all of A; rounds continue while evidence is insufficient and
+    # budget remains (the fallback), so leftover calls stay in the probability
+    # sample instead of being spent uniformly.
     pool = np.flatnonzero(~verified)
-    a_idx = np.zeros(0, dtype=np.int64)
     fit = None
-    if x is None:
-        reason = "proxy_logit_unavailable"
-    else:
+    reason = "proxy_logit_unavailable" if x is None else "empty_calibration_sample"
+    if x is not None:
         x = np.asarray(x, dtype=np.float64).reshape(-1)
         s = expit(x)
-        m_a = max(0, min(config.calib_budget, pool.size, remaining))
-        sample = draw_stratified_sample(pool, s, m_a, n_bins=config.n_bins, rng=rng)
-        a_idx = sample.indices
-        a_y = _label(label_rows, a_idx)
-        remaining -= a_idx.size
-        verified[a_idx] = True
-        y_known[a_idx] = a_y
-        diag["lc_n_strata"] = int(sample.stratum_sizes.size)
+    use_l = oof.x is not None
+    design = None
+    draws = 0
+    m = max(0, min(config.calib_budget, pool.size, remaining))
+    if m > 0:
+        # Without a proxy logit there is nothing to stratify on: one stratum (uniform rounds).
+        scores = s if x is not None else np.zeros(n, dtype=np.float64)
+        design = StratifiedDesign.build(pool, scores, n_bins=config.n_bins, max_strata=m)
+    while design is not None and m > 0:
+        design, new_rows = design.draw(m, rng)
+        new_y = _label(label_rows, new_rows)
+        draws += 1
+        remaining -= new_rows.size
+        verified[new_rows] = True
+        y_known[new_rows] = new_y
+        if x is not None:
+            sample = design.sample()
+            fit = calibrate(
+                x_a=x[sample.indices], h_a=h[sample.indices], y_a=y_known[sample.indices],
+                w_a=sample.weights,
+                x_l=oof.x if use_l else None, h_l=oof.h if use_l else None, y_l=l_y if use_l else None,
+                h_pool=h[pool], lam=config.lam, rho=config.rho,
+            )
+            reason = fit.reason
+            if fit.status != "insufficient_evidence":
+                break  # "ok" -> route; "solver_failed" -> stop retrying
+        m = max(0, min(config.calib_budget, design.remaining, remaining))
 
-        # Stage 3: A+L weighted Platt fit, then A-only intercept shift
-        use_l = oof.x is not None
-        fit = calibrate(
-            x_a=x[a_idx], h_a=h[a_idx], y_a=a_y, w_a=sample.weights,
-            x_l=oof.x if use_l else None, h_l=oof.h if use_l else None, y_l=l_y if use_l else None,
-            h_pool=h[pool], lam=config.lam, rho=config.rho,
-        )
-        reason = fit.reason
-        diag["lc_A_pos"] = int(a_y.sum())
+    a_idx = design.sample().indices if design is not None else np.zeros(0, dtype=np.int64)
+    diag["lc_calls_A"] = int(a_idx.size)
+    diag["lc_fallback_rounds"] = max(0, draws - 1)
+    if x is not None:
+        diag["lc_n_strata"] = 0 if design is None else len(design.strata)
+        diag["lc_A_pos"] = int(y_known[a_idx].sum())
+    if fit is not None:
         diag["lc_ess_pos"] = fit.diagnostics.get("ess_pos")
         diag["lc_max_pos_weight_share"] = fit.diagnostics.get("max_pos_weight_share")
         diag["lc_lambda_used"] = fit.diagnostics.get("lambda_used")
-    diag["lc_calls_A"] = int(a_idx.size)
 
     unverified = np.flatnonzero(~verified)
     budget_left = max(0, remaining)
@@ -224,7 +242,7 @@ def run_learned_calibration(
         # not saturate the way sigmoid(x) does for |x| > ~37.
         plan = plan_dual_threshold(unverified, p, x[unverified], h[unverified], counts, budget_left)
         d_idx = plan.verify_idx
-        status = "routed"
+        status = "routed" if draws <= 1 else "routed_after_fallback"
         diag.update({
             "lc_a": params.a, "lc_b": params.b, "lc_c": params.c, "lc_delta": params.delta,
             "lc_t": params.t, "lc_b_final": params.b_final,
@@ -234,9 +252,8 @@ def run_learned_calibration(
             "lc_planned_f1": plan.f_tilde,
         })
     else:
-        # insufficient evidence: spend what is left uniformly, report no quality estimate
-        take = min(budget_left, unverified.size)
-        d_idx = np.sort(rng.choice(unverified, size=take, replace=False)) if take else np.zeros(0, dtype=np.int64)
+        # insufficient evidence after all rounds: keep refusing, report no quality estimate
+        d_idx = np.zeros(0, dtype=np.int64)
         status = "insufficient_evidence"
         plan = None
 

@@ -11,6 +11,14 @@
   and exact prefix-sum dual thresholds under the remaining budget
   (`budgeted_calibrated_router.py`), orchestrated by `learned_calibration.py`.
 - New result columns `lc_*` (this mode only); `policy_rollback_to_llm_count` = |A| + |D|.
+- **Stratified fallback (replaces uniform exploration).** When the calibration evidence is
+  insufficient (e.g. A has no positives, or misses a refined-label value), the leftover
+  budget is drawn in rounds of `floor(0.1B)` from the same fixed proxy-score strata as A
+  (cumulative per-stratum counts kept equal, without replacement). Each round joins A with
+  weights `N_j / n_j`, the calibrator is refit, and once it succeeds the dual-threshold router
+  spends the rest (`lc_status = routed_after_fallback`). If A still lacks evidence when the
+  budget is exhausted, PROBE keeps refusing (`insufficient_evidence`) and outputs the refined
+  labels plus every LLM label. New column `lc_fallback_rounds`.
 - Env knobs: `LASO_LC_SAMPLE_FRAC` (0.6), `LASO_LC_CALIB_FRAC` (0.1).
 
 ### Design Rationale
@@ -37,6 +45,11 @@
 - Dual-threshold ordering uses the raw proxy logit (sigmoid saturates for |x| > ~37);
   `lc_tau_plus` / `lc_tau_minus` are reported as probabilities.
 - One allocation, one execution; batched re-planning (design3 §7.3) is not implemented.
+- Fallback rounds stop as soon as the calibrator succeeds, so A's final size depends on its
+  labels. Weights `N_j / n_j` are conditional on the realised per-stratum counts; the
+  label-dependent stopping rule is not corrected for (a sequential-sampling approximation).
+- Without a proxy logit (single-class L) the rounds use one stratum, i.e. uniform sampling.
+- A solver failure stops the rounds; the unspent budget is left unused.
 - Quality estimates (`lc_planned_f1`, `lc_estimated_f1`) are model-based, not guarantees.
 
 ## [Unreleased] - 2026-07-09

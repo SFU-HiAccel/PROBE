@@ -104,7 +104,7 @@ class TestRunLearnedCalibration:
         assert res.diagnostics["lc_lambda_used"] == 0.0
         assert f1(res.final_pos) > f1(h > 0.5)
 
-    def test_all_negative_world_is_insufficient_but_spends_budget_uniformly(self):
+    def test_all_negative_world_spends_leftover_in_stratified_rounds_then_refuses(self):
         x, h, _, labeled = _world(seed=4)
         y_true = np.zeros(x.size, dtype=np.int32)
         labeller = _CountingLabeller(y_true)
@@ -114,16 +114,57 @@ class TestRunLearnedCalibration:
         assert res.status == "insufficient_evidence"
         assert res.diagnostics["lc_reason"] == "single_class_in_A"
         assert labeled.size + len(labeller.rows) == cfg.total_budget
+        # every leftover call joins the probability sample A; nothing is routed
+        assert res.verify_idx.size == 0
+        assert res.calib_idx.size == cfg.total_budget - labeled.size
+        assert res.diagnostics["lc_fallback_rounds"] == 4  # 30 initial + 4 rounds of 30 = 150 calls
         assert np.isnan(res.diagnostics["lc_estimated_f1"])
 
-    def test_missing_logit_skips_calibration(self):
+    def test_missing_logit_spends_leftover_in_rounds_without_calibration(self):
         x, h, y_true, labeled = _world(seed=6)
         labeller = _CountingLabeller(y_true)
         cfg = LearnedCalibrationConfig(total_budget=200, seed=7)
         res = run_learned_calibration(x=None, h=h, labeled_indices=labeled, labeled_values=y_true[labeled],
                                       oof=OofFeatures(None, None, "skipped"), label_rows=labeller, config=cfg)
         assert (res.status, res.diagnostics["lc_reason"]) == ("insufficient_evidence", "proxy_logit_unavailable")
-        assert res.calib_idx.size == 0 and res.verify_idx.size == 50
+        assert res.verify_idx.size == 0 and res.calib_idx.size == 50
+        assert np.array_equal(res.final_pos[res.calib_idx], y_true[res.calib_idx] == 1)
+
+    def test_fallback_round_that_finds_evidence_switches_the_router_on(self, monkeypatch):
+        import learned_calibration as lc
+        from weighted_calibrator import CalibrationFit
+
+        x, h, y_true, labeled = _world(seed=12)
+        real_calibrate = lc.calibrate
+        calls = []
+
+        def flaky_calibrate(**kw):
+            calls.append(kw["y_a"].size)
+            if len(calls) == 1:
+                return CalibrationFit(None, "insufficient_evidence", "single_class_in_A", {})
+            return real_calibrate(**kw)
+
+        monkeypatch.setattr(lc, "calibrate", flaky_calibrate)
+        labeller = _CountingLabeller(y_true)
+        cfg = LearnedCalibrationConfig(total_budget=400, seed=13)
+        res = run_learned_calibration(x=x, h=h, labeled_indices=labeled, labeled_values=y_true[labeled],
+                                      oof=OofFeatures(None, None, "skipped"), label_rows=labeller, config=cfg)
+        assert calls == [40, 80]
+        assert res.status == "routed_after_fallback"
+        assert res.diagnostics["lc_fallback_rounds"] == 1
+        assert res.calib_idx.size == 80
+        assert labeled.size + len(labeller.rows) <= cfg.total_budget
+        assert len(labeller.rows) == len(set(labeller.rows))
+        assert res.verify_idx.size == cfg.total_budget - labeled.size - 80
+
+    def test_first_round_success_keeps_plain_routed_status(self):
+        x, h, y_true, labeled = _world(seed=14)
+        res = run_learned_calibration(x=x, h=h, labeled_indices=labeled, labeled_values=y_true[labeled],
+                                      oof=OofFeatures(None, None, "skipped"),
+                                      label_rows=_CountingLabeller(y_true),
+                                      config=LearnedCalibrationConfig(total_budget=600, seed=15))
+        assert res.status == "routed"
+        assert res.diagnostics["lc_fallback_rounds"] == 0
 
     def test_active_sample_over_budget_makes_no_further_calls(self):
         x, h, y_true, labeled = _world(seed=8)
