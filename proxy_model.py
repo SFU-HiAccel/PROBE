@@ -1650,6 +1650,34 @@ def _call_llm_single(
     return 0
 
 
+# --- Expert-call retry policy --------------------------------------------------
+# A failed expert request used to become label 0 immediately. Over ~1M concurrent
+# requests a transient client-side error (httpx timeout / HTTP-2 stream reset,
+# often with an empty message) is expected, and one such error aborted a
+# multi-hour budget-F1 run. Transient failures are retried with exponential
+# backoff; only persistent failures fall back to label 0, and those still log
+# "defaulting to 0" so run watchers can stop the experiment.
+LLM_MAX_ATTEMPTS = max(1, int(os.environ.get("PROBE_LLM_MAX_ATTEMPTS", "4")))
+LLM_RETRY_BASE_DELAY_S = float(os.environ.get("PROBE_LLM_RETRY_BASE_DELAY_S", "1.0"))
+_RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code in _RETRYABLE_STATUS or status_code >= 500
+
+
+async def _retry_backoff(attempt: int) -> None:
+    # Read the module attribute at call time so tests can set it to 0.
+    delay = LLM_RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
+def _describe_exception(e: BaseException) -> str:
+    msg = str(e)
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
 async def _call_llm_single_async(
     client: AsyncOpenAI,
     model: str,
@@ -1661,24 +1689,32 @@ async def _call_llm_single_async(
 ) -> int:
     """Call LLM for a single row via async I/O with concurrency control."""
     async with semaphore:
-        try:
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature,
-                **_labeller_sampling_overrides(),
-                extra_body=_labeller_extra_body(),
-            )
-            _record_llm_usage(getattr(resp, "usage", None))
-            content = (resp.choices[0].message.content or "").strip().lower()
-            return 1 if "true" in content else 0
-        except Exception as e:
-            logger.warning(f"Async LLM call failed: {e}, defaulting to 0")
-            return 0
+        for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+            try:
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **_labeller_sampling_overrides(),
+                    extra_body=_labeller_extra_body(),
+                )
+                _record_llm_usage(getattr(resp, "usage", None))
+                content = (resp.choices[0].message.content or "").strip().lower()
+                return 1 if "true" in content else 0
+            except Exception as e:
+                if attempt < LLM_MAX_ATTEMPTS:
+                    logger.warning(f"Async expert request attempt {attempt}/{LLM_MAX_ATTEMPTS} errored "
+                                   f"({_describe_exception(e)}); retrying")
+                    await _retry_backoff(attempt)
+                    continue
+                logger.warning(f"Async LLM call failed after {attempt} attempts: "
+                               f"{_describe_exception(e)}, defaulting to 0")
+                return 0
+        return 0
 
 
 async def _call_llm_single_raw_async(
@@ -1710,9 +1746,24 @@ async def _call_llm_single_raw_async(
         **_labeller_extra_body(),
     }
     async with semaphore:
-        try:
-            resp = await http_client.post(url, json=body)
+        for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+            try:
+                resp = await http_client.post(url, json=body)
+            except Exception as e:
+                if attempt < LLM_MAX_ATTEMPTS:
+                    logger.warning(f"Expert request attempt {attempt}/{LLM_MAX_ATTEMPTS} errored "
+                                   f"({_describe_exception(e)}); retrying")
+                    await _retry_backoff(attempt)
+                    continue
+                logger.warning(f"Raw async LLM call failed after {attempt} attempts: "
+                               f"{_describe_exception(e)}, defaulting to 0")
+                return 0
             if resp.status_code != 200:
+                if _is_retryable_status(resp.status_code) and attempt < LLM_MAX_ATTEMPTS:
+                    logger.warning(f"Expert request attempt {attempt}/{LLM_MAX_ATTEMPTS} got HTTP "
+                                   f"{resp.status_code}; retrying")
+                    await _retry_backoff(attempt)
+                    continue
                 logger.warning(
                     f"Raw LLM call HTTP {resp.status_code}: {resp.text[:200]}, defaulting to 0"
                 )
@@ -1725,9 +1776,7 @@ async def _call_llm_single_raw_async(
             msg = choices[0].get("message") or {}
             content = (msg.get("content") or "").strip().lower()
             return 1 if "true" in content else 0
-        except Exception as e:
-            logger.warning(f"Raw async LLM call failed: {e}, defaulting to 0")
-            return 0
+        return 0
 
 
 # --- Cached raw httpx client + event loop ----------------------------------
@@ -1989,12 +2038,28 @@ async def _label_chunk_via_completions_async(
         **completion_body_overrides,
     }
     async with semaphore:
-        try:
-            resp = await http_client.post(completions_url, json=body)
+        for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+            try:
+                resp = await http_client.post(completions_url, json=body)
+            except Exception as e:
+                if attempt < LLM_MAX_ATTEMPTS:
+                    logger.warning(f"Batched expert request attempt {attempt}/{LLM_MAX_ATTEMPTS} errored "
+                                   f"({_describe_exception(e)}); retrying")
+                    await _retry_backoff(attempt)
+                    continue
+                logger.warning(f"Batched /v1/completions failed after {attempt} attempts: "
+                               f"{_describe_exception(e)}, defaulting to 0")
+                return [0] * len(chunk_texts)
             if resp.status_code != 200:
+                if _is_retryable_status(resp.status_code) and attempt < LLM_MAX_ATTEMPTS:
+                    logger.warning(f"Batched expert request attempt {attempt}/{LLM_MAX_ATTEMPTS} got HTTP "
+                                   f"{resp.status_code}; retrying")
+                    await _retry_backoff(attempt)
+                    continue
+                # Keep "defaulting to 0" in the message so run watchers catch persistent failures.
                 logger.warning(
                     f"Batched /v1/completions HTTP {resp.status_code}: "
-                    f"{resp.text[:200]}, defaulting all-zero"
+                    f"{resp.text[:200]}, defaulting to 0 (all-zero chunk)"
                 )
                 return [0] * len(chunk_texts)
             payload = resp.json()
@@ -2007,9 +2072,7 @@ async def _label_chunk_via_completions_async(
                 if isinstance(idx, int) and 0 <= idx < len(chunk_texts):
                     results[idx] = _parse_label_from_text(text)
             return results
-        except Exception as e:
-            logger.warning(f"Batched /v1/completions failed: {e}, defaulting to 0")
-            return [0] * len(chunk_texts)
+        return [0] * len(chunk_texts)
 
 
 async def _label_rows_completions_batched_async(
@@ -3261,6 +3324,7 @@ def proxy_filter(
     activeSampling_phase_budget_split: str = "equal",
     defer_enabled: bool = False,
     verify_uncertain: bool = True,
+    router_max_calls: Optional[int] = None,
     decision_mode: str = "force_label",
     deferral_features: Optional[Sequence[str]] = None,
     deferral_rank_axis: str = "blended",
@@ -3391,6 +3455,7 @@ def proxy_filter(
             activeSampling_phase_budget_split=activeSampling_phase_budget_split,
             defer_enabled=defer_enabled,
             verify_uncertain=verify_uncertain,
+            router_max_calls=router_max_calls,
             decision_mode=decision_mode,
             deferral_features=deferral_features,
             deferral_rank_axis=deferral_rank_axis,
@@ -3609,6 +3674,7 @@ def proxy_join(
     activeSampling_phase_budget_split: str = "equal",
     defer_enabled: bool = False,
     verify_uncertain: bool = True,
+    router_max_calls: Optional[int] = None,
     decision_mode: str = "force_label",
     deferral_features: Optional[Sequence[str]] = None,
     deferral_rank_axis: str = "blended",
@@ -3925,6 +3991,7 @@ def proxy_join(
             activeSampling_phase_budget_split=activeSampling_phase_budget_split,
             defer_enabled=defer_enabled,
             verify_uncertain=verify_uncertain,
+            router_max_calls=router_max_calls,
             decision_mode=decision_mode,
             deferral_features=deferral_features,
             deferral_rank_axis=deferral_rank_axis,

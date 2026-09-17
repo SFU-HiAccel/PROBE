@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
+from router_cap import cap_router_candidates
 
 LabelFnType = Callable[[List[Union[str, list]]], np.ndarray]
 from scipy.sparse import csr_matrix, diags
@@ -3220,6 +3221,7 @@ def cluster_proxy_pipeline(
     # defer dual-threshold (replaces single-tau on the active-learning sampling + Bias Diffusion + Homogeneity Propagation path)
     defer_enabled: bool = False,
     verify_uncertain: bool = True,
+    router_max_calls: Optional[int] = None,
     decision_mode: str = "force_label",
     deferral_features: Optional[Sequence[str]] = None,
     # Router π_i rank axis (paper §3.4): "blended" = rank on the sampler's
@@ -3741,8 +3743,13 @@ def cluster_proxy_pipeline(
                 verify_count = 0
                 verify_pos = 0
                 verify_time = 0.0
-                if verify_uncertain and int(defer_mask.sum()) > 0:
-                    cand_idx = np.where(defer_mask)[0]
+                # Patch R1: bound router escalations; keep the rows most likely wrong.
+                n_defer_before_cap = int(defer_mask.sum())
+                cand_idx = (
+                    cap_router_candidates(np.where(defer_mask)[0], decision.defer_proba, router_max_calls)
+                    if verify_uncertain else np.zeros(0, dtype=np.int64)
+                )
+                if verify_uncertain and cand_idx.size > 0:
                     verify_texts = [texts[int(i)] for i in cand_idx.tolist()]
                     t0_verify = time.time()
                     verify_labels = np.asarray(label_fn(verify_texts), dtype=np.int32)
@@ -3778,6 +3785,9 @@ def cluster_proxy_pipeline(
                 profiling["defer_reject_count"] = int((~final_pos & ~defer_mask).sum())
                 profiling["defer_verify_uncertain"] = bool(verify_uncertain)
                 profiling["defer_verify_count"] = verify_count
+                profiling["defer_candidates_before_cap"] = n_defer_before_cap
+                profiling["defer_router_cap"] = -1 if router_max_calls is None else int(router_max_calls)
+                profiling["budget_sample_size"] = int(sample_size)
                 profiling["defer_verify_positive"] = verify_pos
                 profiling["defer_verify_time"] = verify_time
                 profiling["defer_total_time"] = float(defer_total_time)

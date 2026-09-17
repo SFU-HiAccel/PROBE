@@ -33,6 +33,7 @@ from pyspark.sql.functions import col, concat_ws, concat, lit, length
 from pyspark.sql.types import MapType, StructType, ArrayType
 from proxy_model import get_last_profiling, get_last_token_usage, reset_token_usage
 import sem_ops_register  # noqa: F401  -- import registers df.sem_filter / df.sem_join (side effect)
+from router_cap import split_total_budget
 
 MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct")
 #MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3.6-35B-A3B")
@@ -179,6 +180,8 @@ def get_budget_pcts_for_query(query_tag: str) -> list:
 
 KNN_K_VALUES = ["auto"]
 RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "43"))
+# Patch R1: fraction of the total LLM budget the router may spend (env: LASO_ROUTER_CAP_FRAC).
+ROUTER_CAP_FRAC = float(os.environ.get("LASO_ROUTER_CAP_FRAC", "0.3"))
 
 # Active-learning sampler config (paper §3).
 ACTIVESAMPLING_VS_RATIO = 0.5            # explore fraction rho (env: LASO_VS_RATIO)
@@ -567,6 +570,32 @@ def _score_mmqa_q7(pred_path, _gt_path_unused):
     return precision, recall, f1
 
 
+# ---------------------------------------------------------------------------
+# Cars scale-factor switch: LASO_CARS_SF (fallback CARS_SF, default 157376).
+# Read at call time; data dir, file names and GT paths all follow it so data
+# and GT can never come from different scale factors.
+# ---------------------------------------------------------------------------
+def _cars_sf():
+    return (os.environ.get("LASO_CARS_SF") or os.environ.get("CARS_SF") or "157376").strip()
+
+
+def _cars_data_file(kind):
+    """kind in {car_data, image_car_data, text_complaints_data}."""
+    sf = _cars_sf()
+    return f"{DATA_ROOT}/SemBench/files/cars/data/sf_{sf}/{kind}_{sf}.csv"
+
+
+def _cars_gt_path(name):
+    """name in {Q3, Q4, Q8, Q4_rows}; 157376 -> gt_1536 (unchanged), else gt_<sf>."""
+    sf = _cars_sf()
+    gt_dir = "gt_1536" if sf == "157376" else f"gt_{sf}"
+    fname = f"Q4_ground_truth_rows_sf{sf}.csv" if name == "Q4_rows" else f"{name}_{sf}.csv"
+    if name == "Q4" and sf != "157376":
+        # No scalar Q4_<sf>.csv outside gt_1536; the Q4 scorer only uses the rows file.
+        fname = f"Q4_ground_truth_rows_sf{sf}.csv"
+    return f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/{gt_dir}/{fname}"
+
+
 def _score_cars_q8(pred_path, _gt_path_unused):
     """Evaluate Q8 using SemBench's limit-aware ground truth sampling (LIMIT 100).
 
@@ -575,7 +604,7 @@ def _score_cars_q8(pred_path, _gt_path_unused):
     false cases (random_state=42) to pad up to 100.
     """
     LIMIT = 9999
-    ground_truth_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/Q8.csv"
+    ground_truth_path = _cars_gt_path("Q8")
     id_column = "car_id"
 
     def _normalize_id(val):
@@ -811,29 +840,20 @@ def _score_cars_q3(pred_path, gt_path):
 
 
 def _score_cars_q4(pred_path, _gt_path_unused):
-    """Evaluate Q4 with relative-error scoring on the SemBench scalar GT.
+    """Evaluate Q4 as set retrieval over car_id (precision / recall / F1).
 
-    Q4's SemBench ground truth is the scalar
-    ``average_age = 2026 - mean(year[car_id in ENGINE-complaint cars])``
-    (Q4.csv contains a single value, currently 13.732507288629677).
+    Replaces the previous scalar relative-error scoring. That metric compared
+    ``2026 - mean(year)`` over the predicted cars against the single value in
+    ``Q4.csv``, but ``average_age`` of any sizeable subset of the fleet
+    converges to the fleet mean, so the score only reflected how many cars were
+    returned, not which ones. Measured: a random set of 21,879 cars scored
+    0.9826 while the true engine-complaint set scored 0.9791 -- random beat
+    ground truth in five of six sample sizes.
 
-    The scorer:
-      1. Reads the predicted car_ids from the proxy output.
-      2. Looks up each car's ``year`` in ``car_data_9836.csv`` and
-         derives ``pred_avg_age = 2026 - mean(year)`` over the predicted
-         positives.
-      3. Reads the scalar GT from ``Q4.csv`` and computes
-         ``relative_error = |pred - gt| / |gt|`` via the same
-         ``_sembench_aggregation_errors`` helper used by animals_q1.
-      4. Returns ``(score, score, score, extra)`` where
-         ``score = 1 - min(rel_err, 1)`` so "higher is better" remains
-         consistent with the rest of the pipeline. The extra dict
-         carries ``pred_avg_age``, ``gt_avg_age``, ``absolute_error``,
-         ``relative_error``, ``mape``, and ``predicted_count`` so the
-         CSV makes the gap legible.
+    Ground truth is the per-row file (21,879 engine-complaint car_ids).
+    Returns ``(precision, recall, f1, extra)`` to keep the 4-tuple contract.
     """
-    cars_csv = f"{DATA_ROOT}/SemBench/files/cars/data/sf_9836/car_data_9836.csv"
-    scalar_gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/Q4.csv"
+    gt_rows_path = _cars_gt_path("Q4_rows")
 
     def _normalize_id(val):
         s = str(val).strip()
@@ -843,102 +863,54 @@ def _score_cars_q4(pred_path, _gt_path_unused):
             s = s.split(".")[0]
         return s if s.isdigit() else None
 
-    # Sentinel "errored" return so callers always get a 4-tuple.
-    def _error_return(predicted_count=0, pred_avg_age=float("nan"),
-                      gt_avg_age=None, msg=""):
+    def _error_return(msg="", predicted_count=0, gt_count=0):
         if msg:
             print(f"  [cars_q4] {msg}")
         return 0.0, 0.0, 0.0, {
             "predicted_count": int(predicted_count),
-            "pred_avg_age": float(pred_avg_age) if pred_avg_age == pred_avg_age else None,
-            "gt_avg_age": float(gt_avg_age) if gt_avg_age is not None else None,
-            "absolute_error": float("inf"),
-            "relative_error": 1.0,
-            "mape": 100.0,
+            "gt_count": int(gt_count),
+            "true_positives": 0,
         }
 
-    # 1. Predicted car_ids.
+    try:
+        gt_df = pd.read_csv(gt_rows_path, dtype=str)
+    except Exception as e:
+        return _error_return(msg=f"gt read error: {e}")
+    gt_col = "car_id" if "car_id" in gt_df.columns else gt_df.columns[0]
+    gt_ids = {
+        cid for cid in (_normalize_id(v) for v in gt_df[gt_col].dropna())
+        if cid is not None
+    }
+
     try:
         pred_df = pd.read_csv(
             pred_path, on_bad_lines="skip", engine="python", quoting=3, dtype=str,
         )
     except Exception as e:
-        return _error_return(msg=f"pred read error: {e}")
+        return _error_return(msg=f"pred read error: {e}", gt_count=len(gt_ids))
 
     pred_col = "car_id" if "car_id" in pred_df.columns else pred_df.columns[0]
-    predicted_ids = sorted({
+    pred_ids = {
         pid for pid in (_normalize_id(v) for v in pred_df[pred_col].dropna())
         if pid is not None
-    })
-    predicted_count = len(predicted_ids)
+    }
+    if not pred_ids:
+        return _error_return(msg="empty prediction", gt_count=len(gt_ids))
 
-    # 2. Predicted average_age = 2026 - mean(year) over the joined cars.
-    try:
-        cars_df = pd.read_csv(cars_csv)
-    except Exception as e:
-        return _error_return(predicted_count=predicted_count,
-                              msg=f"cars_csv read error: {e}")
-
-    pred_ids_int = {int(x) for x in predicted_ids if x.isdigit()}
-    matched = cars_df[cars_df["car_id"].isin(pred_ids_int)]
-    if len(matched) == 0:
-        return _error_return(predicted_count=predicted_count,
-                              msg="no predicted car_ids matched the cars table")
-    pred_avg_age = float(2026 - matched["year"].mean())
-
-    # 3. Scalar GT from Q4.csv (e.g. 13.732507288629677).
-    try:
-        scalar_gt = pd.read_csv(scalar_gt_path)
-        gt_avg_age = float(scalar_gt.iloc[0, 0])
-    except Exception as e:
-        return _error_return(predicted_count=predicted_count,
-                              pred_avg_age=pred_avg_age,
-                              msg=f"gt read error: {e}")
-
-    errs = _sembench_aggregation_errors(pred_avg_age, gt_avg_age)
-    score = 1.0 - min(errs["relative_error"], 1.0)
-
+    tp = len(pred_ids & gt_ids)
+    precision = tp / len(pred_ids)
+    recall = tp / len(gt_ids) if gt_ids else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
     print(
-        f"  [cars_q4] predicted_count={predicted_count}, "
-        f"pred_avg_age={pred_avg_age:.4f}, gt_avg_age={gt_avg_age:.4f}, "
-        f"abs_err={errs['absolute_error']:.4f}, "
-        f"rel_err={errs['relative_error']:.4f}, "
-        f"mape={errs['mape']:.2f}%, score={score:.4f}"
+        f"  [cars_q4] GT={len(gt_ids)} Pred={len(pred_ids)} TP={tp} "
+        f"P={precision:.4f} R={recall:.4f} F1={f1:.4f}"
     )
-    return score, score, score, {
-        "predicted_count": int(predicted_count),
-        "pred_avg_age": float(pred_avg_age),
-        "gt_avg_age": float(gt_avg_age),
-        "absolute_error": errs["absolute_error"],
-        "relative_error": errs["relative_error"],
-        "mape": errs["mape"],
+    return precision, recall, f1, {
+        "predicted_count": len(pred_ids),
+        "gt_count": len(gt_ids),
+        "true_positives": tp,
     }
 
-
-# ---------------------------------------------------------------------------
-# Animals benchmark scorers (SemBench Q1 / Q3 / Q10 over animals dataset).
-# All three queries share the same sem_filter predicate
-# ("Does the image contain a zebra?") but differ in the post-filter
-# aggregation:
-#   Q1  : count(*)                              → compare to GT scalar count
-#   Q3  : groupBy(City).top(1)                  → check top city vs GT set
-#   Q10 : groupBy(City, StationID).top(1)       → check top pair vs GT set
-#
-# Q1 is an AGGREGATION query. SemBench scores it with
-# `_generic_aggregation_evaluation` (absolute_error / relative_error /
-# mean_absolute_percentage_error) — a scalar comparison, not an F1 over
-# rows. The scorer below preserves the legacy derived-F1 return
-# (`1 - min(rel_err, 1)`) for backward-compatible aggregation in the
-# summary CSV, but it ALSO emits the raw SemBench metrics as a
-# per-run `extra` dict so "F1=0" is no longer an opaque failure mode
-# — the CSV now carries absolute_error, relative_error, and mape so
-# the gap between predicted_count and gt_count is visible.
-#
-# Q3 / Q10 are top-k retrieval over a group-by; SemBench's generic
-# aggregation evaluator handles them via the `first_num` fallback. We
-# keep the 1/0 match scalar and add `predicted_top` / `gt_values` to
-# the extra dict so the CSV makes the comparison legible.
-# ---------------------------------------------------------------------------
 
 
 def _sembench_aggregation_errors(predicted: float, actual: float) -> dict:
@@ -1297,7 +1269,10 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
                        total_pairs, mode, budget_pct, feature_mode, knn_k_val,
                        ablation_label, sampling_strategy, refine_enabled, exp_idx,
                        embedding_model=EMBEDDING_MODEL):
-    _budget = max(10, int(total_pairs * budget_pct / 100))
+    _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
+    _budget_total, _budget, _router_cap = split_total_budget(
+        total_pairs, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
+    print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
     _knn = 0 if knn_k_val == "auto" else int(knn_k_val)
     cfg = _effective_cfg(query_tag, ablation_label, default_threshold=0.5)
     decision_mode = _decision_mode_for_ablation(ablation_label)
@@ -1336,6 +1311,7 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
         activeSampling_lr_blend_schedule=ACTIVESAMPLING_LR_BLEND_SCHEDULE,
         activeSampling_cold_start_phases=ACTIVESAMPLING_COLD_START_PHASES,
         defer_enabled=_cascade_decision_enabled(decision_mode),
+        router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
         deferral_features=DEFERRAL_FEATURES,
         lr_C=cfg["lr_C"],
@@ -1351,7 +1327,10 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
                           total_rows, mode, budget_pct, feature_mode, knn_k_val,
                           ablation_label, sampling_strategy, refine_enabled, exp_idx,
                           embedding_model=EMBEDDING_MODEL):
-    _budget = max(10, int(total_rows * budget_pct / 100))
+    _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
+    _budget_total, _budget, _router_cap = split_total_budget(
+        total_rows, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
+    print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
     _knn = 0 if knn_k_val == "auto" else int(knn_k_val)
     cfg = _effective_cfg(query_tag, ablation_label, default_threshold=0.5)
     decision_mode = _decision_mode_for_ablation(ablation_label)
@@ -1391,6 +1370,7 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
         activeSampling_lr_blend_schedule=ACTIVESAMPLING_LR_BLEND_SCHEDULE,
         activeSampling_cold_start_phases=ACTIVESAMPLING_COLD_START_PHASES,
         defer_enabled=_cascade_decision_enabled(decision_mode),
+        router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
         deferral_features=DEFERRAL_FEATURES,
         lr_C=cfg["lr_C"],
@@ -1608,6 +1588,9 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         "policy_total_rows": policy_total,
         "policy_trust_proxy_count": policy_trust_proxy,
         "policy_rollback_to_llm_count": policy_defer_to_llm,
+        "defer_candidates_before_cap": cluster_prof.get("defer_candidates_before_cap", "-"),
+        "defer_router_cap": cluster_prof.get("defer_router_cap", "-"),
+        "budget_sample_size": cluster_prof.get("budget_sample_size", "-"),
         "policy_rollback_to_llm_rate": (
             policy_defer_to_llm / policy_total if policy_total > 0 else 0.0
         ),
@@ -1836,7 +1819,10 @@ def save_query_results(query_tag, rows):
 # ---------------------------------------------------------------------------
 def run_ecomm_q7():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_250"
+    # scale factor 由 LASO_ECOMM_SF 选择(250 或 4000),GT 目录随之切换,
+    # 避免在两次运行之间反复编辑本文件。
+    _sf = os.environ.get("LASO_ECOMM_SF", "250")
+    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_{_sf}"
     df = sp.read.parquet(os.path.join(data_dir, "styles_details.parquet"))
     df = df.filter(col("price") <= 500)
     df = df.withColumn("description_text", col("productDescriptors.description.value"))
@@ -1857,7 +1843,8 @@ The first product description is:
 The second product description is:
 {right_productDisplayName} - {right_description_text}"""
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/ground_truth/Q7.csv"
+    _gtdir = "ground_truth" if _sf == "250" else "ground_truth_sf4000"
+    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/{_gtdir}/Q7.csv"
     total_pairs = left_df.count() * right_df.count()
     print(f"[ecomm_q7] total_pairs={total_pairs}")
 
@@ -1890,7 +1877,10 @@ The second product description is:
 # ---------------------------------------------------------------------------
 def run_ecomm_q8():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_250"
+    # scale factor 由 LASO_ECOMM_SF 选择(250 或 4000),GT 目录随之切换,
+    # 避免在两次运行之间反复编辑本文件。
+    _sf = os.environ.get("LASO_ECOMM_SF", "250")
+    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_{_sf}"
     styles = sp.read.parquet(os.path.join(data_dir, "styles_details.parquet"))
     image_map = sp.read.parquet(os.path.join(data_dir, "image_mapping.parquet"))
     styles = styles.withColumn("description_text", col("productDescriptors.description.value"))
@@ -1912,7 +1902,8 @@ Image: {image:right_image_filepath}
 Product name: {left_productDisplayName}
 Product description: {left_description_text}"""
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/ground_truth/Q8.csv"
+    _gtdir = "ground_truth" if _sf == "250" else "ground_truth_sf4000"
+    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/{_gtdir}/Q8.csv"
     total_pairs = left_df.count() * right_df.count()
     print(f"[ecomm_q8] total_pairs={total_pairs}")
 
@@ -1938,7 +1929,9 @@ Product description: {left_description_text}"""
 # ---------------------------------------------------------------------------
 def run_ecomm_q9():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_250"
+    # scale factor 由 LASO_ECOMM_SF 选择,GT 目录随之切换(ecomm 已统一为 sf_250)
+    _sf = os.environ.get("LASO_ECOMM_SF", "250")
+    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_{_sf}"
     styles = sp.read.parquet(os.path.join(data_dir, "styles_details.parquet"))
     image_map = sp.read.parquet(os.path.join(data_dir, "image_mapping.parquet"))
 
@@ -1974,7 +1967,8 @@ object type and overall surface color.
 Left image: {image:left_image_filepath}
 Right image: {image:right_image_filepath}"""
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/ground_truth/Q9.csv"
+    _gtdir = "ground_truth" if _sf == "250" else "ground_truth_sf4000"
+    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/{_gtdir}/Q9.csv"
     total_pairs = left_df.count() * right_df.count()
     print(f"[ecomm_q9] total_pairs={total_pairs}")
 
@@ -2001,7 +1995,9 @@ Right image: {image:right_image_filepath}"""
 # ---------------------------------------------------------------------------
 def run_ecomm_q13():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_250"
+    # scale factor 由 LASO_ECOMM_SF 选择,GT 目录随之切换(ecomm 已统一为 sf_250)
+    _sf = os.environ.get("LASO_ECOMM_SF", "250")
+    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_{_sf}"
     styles = sp.read.parquet(os.path.join(data_dir, "styles_details.parquet"))
     image_map = sp.read.parquet(os.path.join(data_dir, "image_mapping.parquet"))
     styles = styles.withColumn("description_text", col("productDescriptors.description.value"))
@@ -2027,7 +2023,8 @@ If the t-shirt is not green, it should at least feature a striped design.
 
 The product has the following image {image:image_filepath} and textual description {productDisplayName} {description_text}"""
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/ground_truth/Q13.csv"
+    _gtdir = "ground_truth" if _sf == "250" else "ground_truth_sf4000"
+    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/{_gtdir}/Q13.csv"
     total_rows = merged.count()
     print(f"[ecomm_q13] total_rows={total_rows}")
 
@@ -2148,7 +2145,9 @@ Review 2: "{reviewText_right}" """
 # ---------------------------------------------------------------------------
 def run_mmqa_q2a():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/mmqa/data/sf_800"
+    # scale factor 由 LASO_MMQA_SF 选择(默认 800 = PROBE 已跑的配置)
+    _msf = os.environ.get("LASO_MMQA_SF", "800")
+    data_dir = f"{DATA_ROOT}/SemBench/files/mmqa/data/sf_{_msf}"
     ap_df = sp.read.option("header", "true").csv(os.path.join(data_dir, "ap_warrior.csv"))
     img_df = sp.read.option("header", "true").csv(os.path.join(data_dir, "thalamusdb_images.csv"))
     img_df = img_df.withColumn("image_filepath", concat(lit(data_dir + "/images/"), col("image_filename")))
@@ -2188,7 +2187,9 @@ Image: {image:image_filepath}"""
 # ---------------------------------------------------------------------------
 def run_mmqa_q7():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/mmqa/data/sf_200"
+    # scale factor 由 LASO_MMQA_SF 选择(默认 200 = PROBE 已跑的配置)
+    _msf = os.environ.get("LASO_MMQA_SF", "200")
+    data_dir = f"{DATA_ROOT}/SemBench/files/mmqa/data/sf_{_msf}"
     airport_df = sp.read.option("header", "true").csv(os.path.join(data_dir, "tampa_international_airport.csv"))
     img_df = sp.read.option("header", "true").csv(os.path.join(data_dir, "thalamusdb_images.csv"))
     img_df = img_df.withColumn("image_filepath", concat(lit(data_dir + "/images/"), col("image_filename")))
@@ -2327,10 +2328,10 @@ def make_classify_ari_scorer(id_col, cat_col, fallback_category):
 # ---------------------------------------------------------------------------
 def run_cars_q1():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_9836"
+    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_157376"
     complaints = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "text_complaints_data_9836.csv"))
+        .csv(os.path.join(data_dir, "text_complaints_data_157376.csv"))
 
     complaints_df = complaints.select(
         col("car_id").cast("string").alias("car_id"),
@@ -2342,7 +2343,7 @@ def run_cars_q1():
               "a crash, accident, or collision.\n"
               "Complaint: {summary}")
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/Q1.csv"
+    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/gt_1536/Q1_157376.csv"
     total_rows = complaints_df.count()
     print(f"[cars_q1] total_rows={total_rows}")
 
@@ -2395,13 +2396,14 @@ def run_cars_q1():
 # ---------------------------------------------------------------------------
 def run_cars_q3():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_9836"
+    # scale factor 由 LASO_CARS_SF(回退 CARS_SF)选择(默认 157376 = PROBE 已跑的配置)
+    _csf = _cars_sf()
     car_data = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "car_data_9836.csv"))
+        .csv(_cars_data_file("car_data"))
     image_data = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "image_car_data_9836.csv"))
+        .csv(_cars_data_file("image_car_data"))
 
     car_data = car_data.withColumn("registration_date", col("registration_date").cast("string"))
     image_data = image_data.withColumn(
@@ -2417,9 +2419,9 @@ def run_cars_q3():
               "Return true if the car is NOT damaged (pristine / no visible damage). "
               "Image: {image:image_path}")
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/Q3.csv"
+    gt_path = _cars_gt_path("Q3")
     total_rows = merged.count()
-    print(f"[cars_q3] total_rows={total_rows} (after transmission==Manual pre-filter)")
+    print(f"[cars_q3] sf={_csf} total_rows={total_rows} (after transmission==Manual pre-filter)")
 
     def id_expr(rdf):
         # Ground truth uses `vin`; keep one row per VIN and enforce the
@@ -2461,10 +2463,11 @@ def run_cars_q3():
 # ---------------------------------------------------------------------------
 def run_cars_q4():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_9836"
+    # scale factor 由 LASO_CARS_SF(回退 CARS_SF)选择(默认 157376 = PROBE 已跑的配置)
+    _csf = _cars_sf()
     complaints = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "text_complaints_data_9836.csv"))
+        .csv(_cars_data_file("text_complaints_data"))
 
     complaints_df = complaints.select(
         col("car_id").cast("string").alias("car_id"),
@@ -2477,10 +2480,10 @@ def run_cars_q4():
               "Complaint: {summary}")
 
     # gt_path points at the scalar Q4.csv for bookkeeping; the scorer
-    # re-derives per-row GT internally from text_complaints_data_9836.csv.
-    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/Q4.csv"
+    # re-derives per-row GT internally from the Q4 rows file (sf follows _cars_sf()).
+    gt_path = _cars_gt_path("Q4")
     total_rows = complaints_df.count()
-    print(f"[cars_q4] total_rows={total_rows}")
+    print(f"[cars_q4] sf={_csf} total_rows={total_rows}")
 
     def id_expr(rdf):
         # Q4 is scored against the scalar average_age, so we need the full
@@ -2519,13 +2522,13 @@ def run_cars_q4():
 # ---------------------------------------------------------------------------
 def run_cars_q10():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_9836"
+    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_157376"
     cars = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "car_data_9836.csv"))
+        .csv(os.path.join(data_dir, "car_data_157376.csv"))
     complaints = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "text_complaints_data_9836.csv"))
+        .csv(os.path.join(data_dir, "text_complaints_data_157376.csv"))
     cars = cars.withColumn("registration_date", col("registration_date").cast("string"))
 
     complaints_df = cars.join(complaints, on="car_id", how="inner") \
@@ -2554,7 +2557,7 @@ Answer True if the complaint is primarily about this category, False otherwise.
 
 Complaint: {left_summary}"""
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/Q10.csv"
+    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/gt_1536/Q10_157376.csv"
     n_complaints = complaints_df.count()
     total_pairs = n_complaints * len(categories)
     print(f"[cars_q10] n_complaints={n_complaints}, n_categories={len(categories)}, total_pairs={total_pairs}")
@@ -2612,13 +2615,14 @@ Complaint: {left_summary}"""
 # ---------------------------------------------------------------------------
 def run_cars_q8():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_9836"
+    # scale factor 由 LASO_CARS_SF(回退 CARS_SF)选择(默认 157376 = PROBE 已跑的配置)
+    _csf = _cars_sf()
     car_data = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "car_data_9836.csv"))
+        .csv(_cars_data_file("car_data"))
     image_data = sp.read.option("header", "true").option("inferSchema", "true") \
         .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "image_car_data_9836.csv"))
+        .csv(_cars_data_file("image_car_data"))
 
     car_data = car_data.withColumn("registration_date", col("registration_date").cast("string"))
     image_data = image_data.withColumn(
@@ -2632,9 +2636,9 @@ def run_cars_q8():
               "Return true if car has both, puncture and paint scratches. "
               "Image: {image:image_path}")
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/Q8.csv"
+    gt_path = _cars_gt_path("Q8")
     total_rows = merged.count()
-    print(f"[cars_q8] total_rows={total_rows}")
+    print(f"[cars_q8] sf={_csf} total_rows={total_rows}")
 
     def id_expr(rdf):
         return rdf.select("car_id")
@@ -2670,7 +2674,7 @@ def run_cars_q8():
 # ---------------------------------------------------------------------------
 def run_ecomm_q6():
     sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_250"
+    data_dir = f"{DATA_ROOT}/SemBench/files/ecomm/data/sf_4000"
     styles = sp.read.parquet(os.path.join(data_dir, "styles_details.parquet"))
     image_map = sp.read.parquet(os.path.join(data_dir, "image_mapping.parquet"))
 
@@ -2721,7 +2725,7 @@ Answer True if the image depicts this category, False otherwise.
 
 Image: {image:left_image_filepath}"""
 
-    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/ground_truth/Q6.csv"
+    gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/ground_truth_sf4000/Q6.csv"
     n_images = images_df.count()
     total_pairs = n_images * len(category_descriptions)
     print(f"[ecomm_q6] n_images={n_images}, n_categories={len(category_descriptions)}, total_pairs={total_pairs}")
