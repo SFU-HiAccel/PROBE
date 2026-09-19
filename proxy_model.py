@@ -1596,6 +1596,57 @@ def _build_pair_embeddings_from_independent(
     return out
 
 
+PAIR_INTERACTION_RANK = int(os.environ.get("LLMSQL_PAIR_INTERACTION_RANK", "128"))
+
+
+def _build_pair_interaction_features(
+    pair_indices: List[Tuple[int, int]],
+    left_embs: np.ndarray,
+    right_embs: np.ndarray,
+    rank: int = PAIR_INTERACTION_RANK,
+) -> np.ndarray:
+    """Interaction pair features ``[cos(u,v), Pu*Pv, |Pu-Pv|]`` (see docs/design/2026-09-17-join-repr-experiments.md).
+
+    The mean representation ``(u+v)/2`` makes a linear head additive, ``w.u + w.v``, so it cannot
+    express "these two rows match" — neither can ``[u, v]``. The elementwise product is the diagonal
+    Kronecker pairwise kernel (a learnable cosine) and the absolute difference the diagonal MLPK
+    kernel; both carry the interaction the join predicate asks about. Rows are L2-normalised and
+    projected with a PCA fitted on the rows themselves (cheap: n_left + n_right vectors), which keeps
+    the feature dimension at 1 + 2*rank instead of 1 + 2*d and keeps the head trainable from the few
+    dozen labels a join budget buys.
+    """
+    n = len(pair_indices)
+    d = int(left_embs.shape[1])
+    r = int(max(1, min(rank, d, len(left_embs) + len(right_embs) - 1)))
+    if n == 0:
+        return np.empty((0, 1 + 2 * r), dtype=np.float32)
+
+    def _unit(x):
+        x = np.asarray(x, dtype=np.float32)
+        return x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+
+    ln, rn = _unit(left_embs), _unit(right_embs)
+    if r < d:
+        from sklearn.decomposition import PCA
+        proj = PCA(n_components=r, random_state=0).fit(np.vstack([ln, rn]))
+        lp, rp = proj.transform(ln).astype(np.float32), proj.transform(rn).astype(np.float32)
+    else:
+        lp, rp = ln, rn
+
+    pair_arr = np.asarray(pair_indices, dtype=np.int64)
+    li_arr, ri_arr = np.ascontiguousarray(pair_arr[:, 0]), np.ascontiguousarray(pair_arr[:, 1])
+    out = np.empty((n, 1 + 2 * r), dtype=np.float32)
+    chunk = max(1, min(n, 1_000_000 // max(1, r)))          # cap the temporaries at a few hundred MB
+    for s0 in range(0, n, chunk):
+        s1 = min(n, s0 + chunk)
+        lu, ru = ln[li_arr[s0:s1]], rn[ri_arr[s0:s1]]
+        lq, rq = lp[li_arr[s0:s1]], rp[ri_arr[s0:s1]]
+        out[s0:s1, 0] = np.sum(lu * ru, axis=1)
+        out[s0:s1, 1:1 + r] = lq * rq
+        out[s0:s1, 1 + r:] = np.abs(lq - rq)
+    return out
+
+
 def embed_texts(texts: List[str], embedding_model: str) -> np.ndarray:
     from proxy_model_backends import get_backend
     return get_backend(embedding_model).embed_texts(texts)
@@ -3644,6 +3695,7 @@ def proxy_join(
     exclude_self_pairs: bool = False,
     join_sim_mode: str = "pair",
     lr_feature_mode: str = "embedding",
+    pair_feature_mode: str = "mean",
     budget_size: Optional[int] = None,
     cluster_proxy_mode: str = "propagation",
     n_clusters: int = 0,
@@ -3803,11 +3855,24 @@ def proxy_join(
         )
     else:
         logger.info(f"Building fused embedding features for {effective_pairs} pairs...")
-        pair_embeddings = _build_pair_embeddings_from_independent(
+        sampling_embeddings = _build_pair_embeddings_from_independent(
             pair_indices, left_embs, right_embs,
         )
-        logger.info(f"Fused embedding dim: {pair_embeddings.shape[1]}")
-        sampling_embeddings = pair_embeddings
+        if pair_feature_mode == "interaction":
+            # Only the proxy's features change; the similarity axis and the kNN graph keep the mean
+            # representation, so this isolates the representation from the graph question.
+            pair_embeddings = _build_pair_interaction_features(
+                pair_indices, left_embs, right_embs,
+            )
+            logger.info(
+                f"Pair feature mode: interaction, dim {pair_embeddings.shape[1]} "
+                f"(sampling/graph keep the mean representation, dim {sampling_embeddings.shape[1]})"
+            )
+        elif pair_feature_mode == "mean":
+            pair_embeddings = sampling_embeddings
+            logger.info(f"Fused embedding dim: {pair_embeddings.shape[1]}")
+        else:
+            raise ValueError(f"unknown pair_feature_mode={pair_feature_mode!r} (expected mean or interaction)")
 
     prof["embedding_time"] += time.time() - t0_emb
 

@@ -44,6 +44,11 @@ LEARNED_CALIBRATION_RESULT_KEYS = (
     "lc_lambda_used", "lc_oof_reason", "lc_a", "lc_b", "lc_c", "lc_delta", "lc_t", "lc_b_final",
     "lc_intercept_residual", "lc_k_plus", "lc_k_minus", "lc_tau_plus", "lc_tau_minus",
     "lc_planned_f1", "lc_estimated_f1", "lc_D_pos", "lc_time_s", "lc_fallback_rounds",
+    "lc_route_budget", "lc_fallback_budget", "lc_fallback_used",
+    "lc_cp_used", "lc_cp_target_pos", "lc_cp_measured_pos", "lc_cp_upper_pos", "lc_cp_strata",
+    "lc_alpha", "lc_plan_calls", "lc_alloc",
+    "lc_calibrator", "lc_route_objective", "lc_route_cost_exp", "lc_f_gain", "lc_f_curve",
+    "lc_gam_se_median", "lc_gam_monotone", "lc_gam_n_knots", "lc_gam_ridge",
 )
 
 # refine_fn(train_idx, train_y) -> (refined_label_mask[N], lr_logit[N] or None)
@@ -55,8 +60,9 @@ LabelRowsFn = Callable[[np.ndarray], np.ndarray]
 @dataclass(frozen=True)
 class LearnedCalibrationConfig:
     total_budget: int
-    sample_frac: float = 0.6
-    calib_frac: float = 0.1
+    sample_frac: float = 0.5
+    calib_frac: float = 0.4
+    route_frac: float = 0.1
     n_bins: int = 10
     n_folds: int = 5
     lam: float = 0.25
@@ -64,6 +70,21 @@ class LearnedCalibrationConfig:
     rho_b: float = 0.25
     rho_c: float = 0.25
     rho_delta: float = 1.0
+    alpha: float = 1.0           # 1: spend the whole routing budget; <1: trade quality against calls
+    neyman: bool = True          # allocate A by Neyman on a floor instead of evenly across strata
+    fallback_unlimited: bool = False  # let the stratified fallback draw on the whole remaining budget
+    route_unlimited: bool = False     # routing is not capped by a share: alpha alone decides how far it goes
+    route_budget_mult: float = 0.0    # >0: routing may spend up to mult x the nominal budget, charged on top
+    cp_lam: float = 0.0          # >0: mix a Clopper-Pearson upper bound in when A has no positive
+    cp_alpha: float = 0.05       # failure probability of that bound, split across strata
+    # --- calibrator arm: "platt" (a line in log-odds) or GAMCAL's spline (arXiv:2604.00660) ---
+    calibrator: str = "platt"    # "platt" | "gam" | "gam_univariate" (the last drops h and 1[L])
+    gam_ridge: float = 1.0       # GAMCAL's smoothing lambda; the paper takes it as a fixed input
+    gam_knots: int = 8           # knot count -- unspecified by the paper, so ours to declare
+    gam_stochastic: bool = False # route on Eq. 26's g~(s,q) instead of the posterior mean
+    # --- routing objective: see plan_dual_threshold for why cost_exp is what makes alpha resolve ---
+    route_objective: str = "pool"   # "pool" | "budget" | "normalized" | "gamcal"
+    route_cost_exp: float = 1.0     # gamma on the cost term; >1 turns alpha from a switch into a dial
     seed: int = 42
 
     def __post_init__(self) -> None:
@@ -73,6 +94,8 @@ class LearnedCalibrationConfig:
             raise ValueError(f"sample_frac must be in (0, 1], got {self.sample_frac}")
         if not 0.0 <= self.calib_frac <= 1.0 or self.sample_frac + self.calib_frac > 1.0:
             raise ValueError("calib_frac must be in [0, 1] and sample_frac + calib_frac <= 1")
+        if not 0.0 <= self.route_frac <= 1.0 or self.sample_frac + self.calib_frac + self.route_frac > 1.0 + 1e-9:
+            raise ValueError("route_frac must be in [0, 1] and the three shares must sum to <= 1")
         if self.n_bins < 1 or self.n_folds < 2:
             raise ValueError("n_bins must be >= 1 and n_folds >= 2")
         if not 0.0 <= self.lam <= 1.0:
@@ -87,6 +110,13 @@ class LearnedCalibrationConfig:
     @property
     def calib_budget(self) -> int:
         return int(self.calib_frac * self.total_budget)
+
+    @property
+    def route_budget(self) -> int:
+        """Share reserved for routing D. The stratified fallback also draws from it, so a run that
+        keeps failing to calibrate spends at most this much beyond L + A instead of eating the
+        whole remaining budget."""
+        return int(self.route_frac * self.total_budget)
 
     @property
     def rho(self) -> Tuple[float, float, float, float]:
@@ -181,11 +211,10 @@ def run_learned_calibration(
         "lc_oof_reason": oof.reason,
     }
 
-    # Stages 2-3: stratified calibration sample A on the frozen proxy score s, drawn
-    # in rounds of calib_budget from fixed strata. After each round the calibrator
-    # is refit on all of A; rounds continue while evidence is insufficient and
-    # budget remains (the fallback), so leftover calls stay in the probability
-    # sample instead of being spent uniformly.
+    # Stages 2-3: stratified calibration sample A on the frozen proxy score s. The first draw is
+    # calib_budget; if the calibrator still lacks evidence, further rounds (the fallback) come out of
+    # the routing share, capped at route_budget in total. Budget the fallback does not use stays with
+    # routing, and a run that never calibrates stops after L + A + route_budget instead of consuming B.
     pool = np.flatnonzero(~verified)
     fit = None
     reason = "proxy_logit_unavailable" if x is None else "empty_calibration_sample"
@@ -195,11 +224,17 @@ def run_learned_calibration(
     use_l = oof.x is not None
     design = None
     draws = 0
+    # Capped at D's share by default; unlimited lets it keep drawing while any budget is left, which is
+    # the behaviour the 5-seed study had, and makes the fallback's real appetite visible.
+    fallback_left = max(0, remaining - config.calib_budget) if config.fallback_unlimited \
+        else max(0, min(config.route_budget, remaining - config.calib_budget))
+    diag["lc_fallback_budget"] = int(fallback_left)
     m = max(0, min(config.calib_budget, pool.size, remaining))
     if m > 0:
         # Without a proxy logit there is nothing to stratify on: one stratum (uniform rounds).
         scores = s if x is not None else np.zeros(n, dtype=np.float64)
-        design = StratifiedDesign.build(pool, scores, n_bins=config.n_bins, max_strata=m)
+        design = StratifiedDesign.build(pool, scores, n_bins=config.n_bins, max_strata=m,
+                                        neyman=config.neyman and x is not None)
     while design is not None and m > 0:
         design, new_rows = design.draw(m, rng)
         new_y = _label(label_rows, new_rows)
@@ -209,48 +244,102 @@ def run_learned_calibration(
         y_known[new_rows] = new_y
         if x is not None:
             sample = design.sample()
-            fit = calibrate(
+            common = dict(
                 x_a=x[sample.indices], h_a=h[sample.indices], y_a=y_known[sample.indices],
                 w_a=sample.weights,
                 x_l=oof.x if use_l else None, h_l=oof.h if use_l else None, y_l=l_y if use_l else None,
-                h_pool=h[pool], lam=config.lam, rho=config.rho,
+                h_pool=h[pool], lam=config.lam, cp_lam=config.cp_lam, cp_alpha=config.cp_alpha,
             )
+            if str(config.calibrator).startswith("gam"):
+                from gam_calibrator import calibrate_gam
+                fit = calibrate_gam(**common, ridge=config.gam_ridge, n_knots=config.gam_knots,
+                                    univariate=config.calibrator == "gam_univariate")
+            else:
+                fit = calibrate(**common, rho=config.rho)
             reason = fit.reason
             if fit.status != "insufficient_evidence":
                 break  # "ok" -> route; "solver_failed" -> stop retrying
-        m = max(0, min(config.calib_budget, design.remaining, remaining))
+        # Fallback rounds are paid for by the routing share, not by whatever budget is left.
+        m = max(0, min(config.calib_budget, fallback_left, design.remaining, remaining))
+        fallback_left -= m
 
     a_idx = design.sample().indices if design is not None else np.zeros(0, dtype=np.int64)
     diag["lc_calls_A"] = int(a_idx.size)
+    diag["lc_fallback_used"] = int(diag["lc_fallback_budget"] - max(0, fallback_left))
     diag["lc_fallback_rounds"] = max(0, draws - 1)
     if x is not None:
         diag["lc_n_strata"] = 0 if design is None else len(design.strata)
+        diag["lc_alloc"] = "neyman" if (design is not None and design.p_hat is not None) else "equal"
         diag["lc_A_pos"] = int(y_known[a_idx].sum())
     if fit is not None:
+        for key in ("cp_used", "cp_target_pos", "cp_measured_pos", "cp_upper_pos", "cp_strata"):
+            if key in fit.diagnostics:
+                diag[f"lc_{key}"] = fit.diagnostics[key]
         diag["lc_ess_pos"] = fit.diagnostics.get("ess_pos")
         diag["lc_max_pos_weight_share"] = fit.diagnostics.get("max_pos_weight_share")
         diag["lc_lambda_used"] = fit.diagnostics.get("lambda_used")
 
     unverified = np.flatnonzero(~verified)
-    budget_left = max(0, remaining)
+    # Routing spends what is left of its own share; the fallback may already have taken part of it.
+    if config.route_budget_mult > 0.0:
+        # Routing is charged on top of the sampling+calibration budget but bounded: D <= mult * B.
+        budget_left = int(min(unverified.size, int(config.route_budget_mult * config.total_budget)))
+    elif config.route_unlimited:
+        # No cap at all: every unverified row is eligible and the alpha objective decides where to stop.
+        # With alpha = 1 this verifies the whole pool, i.e. it degenerates to calling the LLM on everything.
+        budget_left = int(unverified.size)
+    elif config.fallback_unlimited:
+        budget_left = max(0, remaining)
+    else:
+        budget_left = max(0, min(remaining, config.route_budget - diag["lc_fallback_used"]))
+    diag["lc_route_budget"] = int(budget_left)
     if fit is not None and fit.status == "ok":
         # Stages 4-5: dual thresholds on calibrated probabilities, one allocation
         params = fit.params
-        p = predict_proba(params, x[unverified], h[unverified])
+        if hasattr(params, "predict"):          # GAM arm
+            if config.gam_stochastic:
+                # Eq. 26: q is drawn once per row and frozen, so routing stays consistent across
+                # refits (paper §5.3). Rows in poorly calibrated regions get more dispersed scores.
+                q = np.random.default_rng(int(config.seed) + 1).random(n)
+                p = params.predict_stochastic(x[unverified], h[unverified], q[unverified])
+            else:
+                p = params.predict(x[unverified], h[unverified])
+        else:
+            p = predict_proba(params, x[unverified], h[unverified])
         counts = expected_counts(p, h[unverified], n_verified_pos=int(y_known[verified].sum()))
         # Order by the raw logit: p is monotone in x within each h group, and x does
         # not saturate the way sigmoid(x) does for |x| > ~37.
-        plan = plan_dual_threshold(unverified, p, x[unverified], h[unverified], counts, budget_left)
+        plan = plan_dual_threshold(unverified, p, x[unverified], h[unverified], counts, budget_left,
+                                   alpha=config.alpha, n_pool=n,
+                                   objective=config.route_objective, cost_exp=config.route_cost_exp)
         d_idx = plan.verify_idx
-        status = "routed" if draws <= 1 else "routed_after_fallback"
+        if fit.diagnostics.get("cp_used"):
+            # Level anchored by the Clopper-Pearson bound rather than an observed positive in A.
+            status = "routed_conservative"
+        else:
+            status = "routed" if draws <= 1 else "routed_after_fallback"
         diag.update({
-            "lc_a": params.a, "lc_b": params.b, "lc_c": params.c, "lc_delta": params.delta,
-            "lc_t": params.t, "lc_b_final": params.b_final,
+            "lc_t": params.t,
             "lc_intercept_residual": fit.diagnostics.get("intercept_residual"),
             "lc_k_plus": plan.k_plus, "lc_k_minus": plan.k_minus,
             "lc_tau_plus": float(expit(plan.tau_plus)), "lc_tau_minus": float(expit(plan.tau_minus)),
-            "lc_planned_f1": plan.f_tilde,
+            "lc_planned_f1": plan.f_tilde, "lc_alpha": plan.alpha, "lc_plan_calls": plan.n_calls,
+            "lc_calibrator": str(config.calibrator),
+            "lc_route_objective": str(plan.objective), "lc_route_cost_exp": float(config.route_cost_exp),
+            # f(r) is what decides whether alpha can resolve at all: a near-linear curve has its
+            # optimum at an endpoint under any linear scalarisation. Recording the gain and the
+            # curve makes a degenerate dial diagnosable from the output instead of by re-deriving it.
+            "lc_f_gain": plan.f_gain,
+            "lc_f_curve": ";".join(f"{v:.6f}" for v in plan.f_curve),
         })
+        if hasattr(params, "theta"):            # GAM arm
+            diag.update({"lc_gam_se_median": fit.diagnostics.get("gam_se_median"),
+                         "lc_gam_monotone": fit.diagnostics.get("gam_monotone"),
+                         "lc_gam_n_knots": fit.diagnostics.get("gam_n_knots"),
+                         "lc_gam_ridge": fit.diagnostics.get("gam_ridge")})
+        else:                                   # Platt arm
+            diag.update({"lc_a": params.a, "lc_b": params.b, "lc_c": params.c,
+                         "lc_delta": params.delta, "lc_b_final": params.b_final})
     else:
         # insufficient evidence after all rounds: keep refusing, report no quality estimate
         d_idx = np.zeros(0, dtype=np.int64)

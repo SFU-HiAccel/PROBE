@@ -14,7 +14,7 @@ sample of size n_j (cumulative) from N_j rows, so weights are N_j / n_j.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import numpy as np
 
@@ -95,6 +95,50 @@ def allocate_cumulative(sizes: np.ndarray, counts: np.ndarray, m: int) -> np.nda
     return new_counts
 
 
+def allocate_neyman(sizes: np.ndarray, counts: np.ndarray, m: int, p_hat: np.ndarray,
+                    *, floor_frac: float = 0.2) -> np.ndarray:
+    """Add ``m`` draws with Neyman allocation on a floor, returning the new cumulative counts.
+
+    Neyman (1934) minimises the variance of the estimated total by giving stratum j a share
+    proportional to ``N_j * sigma_j`` with ``sigma_j = sqrt(p_j (1 - p_j))``. Under a rare positive
+    rate that tilts the sample towards the strata where positives can plausibly live, which is what an
+    equal split fails to do: on mmqa_q7 it spread 1080 draws evenly and caught none of the 5 positives.
+
+    ``floor_frac`` of the draws is handed out by the equal rule first, so every stratum keeps a
+    non-zero inclusion probability. Without that floor a stratum could get zero draws, its rows would
+    have pi = 0, and the Horvitz-Thompson estimate would no longer cover the pool (the coverage bias
+    Owen & Zhou's defensive mixing guards against).
+    """
+    sizes = np.asarray(sizes, dtype=np.int64).reshape(-1)
+    counts = np.asarray(counts, dtype=np.int64).reshape(-1)
+    p = np.clip(np.asarray(p_hat, dtype=np.float64).reshape(-1), 0.0, 1.0)
+    if p.shape != sizes.shape:
+        raise ValueError("p_hat must have one entry per stratum")
+    m = int(m)
+    if m <= 0:
+        return counts.copy()
+
+    n_floor = min(m, int(np.ceil(floor_frac * m)))
+    target = allocate_cumulative(sizes, counts, n_floor)          # spread the floor evenly
+    left = m - n_floor
+    if left <= 0:
+        return target
+
+    room = sizes - target
+    sigma = np.sqrt(np.maximum(p * (1.0 - p), 1e-12))
+    share = sizes.astype(np.float64) * sigma
+    share = np.where(room > 0, share, 0.0)
+    if share.sum() <= 0:                                          # no information to tilt on
+        return allocate_cumulative(sizes, target, min(left, int(room.sum())))
+    want = np.floor(left * share / share.sum()).astype(np.int64)
+    want = np.minimum(want, room)
+    target = target + want
+    spare = left - int(want.sum())
+    if spare > 0:                                                 # leftovers by the equal rule
+        target = allocate_cumulative(sizes, target, min(spare, int((sizes - target).sum())))
+    return target
+
+
 def allocate_equal(sizes: np.ndarray, m: int) -> np.ndarray:
     """Split ``m`` draws evenly across strata, capped by size, leftovers low-score first."""
     sizes = np.asarray(sizes, dtype=np.int64).reshape(-1)
@@ -109,11 +153,18 @@ class StratifiedDesign:
 
     strata: Tuple[np.ndarray, ...]   # row ids per stratum, fixed
     sampled: Tuple[np.ndarray, ...]  # sorted row ids drawn so far per stratum
+    p_hat: Optional[np.ndarray] = None   # per-stratum positive rate used for Neyman allocation
 
     @classmethod
-    def build(cls, pool_idx: np.ndarray, scores: np.ndarray, *, n_bins: int, max_strata: int) -> "StratifiedDesign":
+    def build(cls, pool_idx: np.ndarray, scores: np.ndarray, *, n_bins: int, max_strata: int,
+              neyman: bool = False) -> "StratifiedDesign":
         strata = tuple(build_score_strata(pool_idx, scores, n_bins, max_strata))
-        return cls(strata=strata, sampled=tuple(np.zeros(0, dtype=np.int64) for _ in strata))
+        p_hat = None
+        if neyman:
+            # The proxy score is the only estimate of the positive rate available before labelling.
+            sc = np.asarray(scores, dtype=np.float64)
+            p_hat = np.array([float(np.clip(sc[st].mean(), 0.0, 1.0)) for st in strata])
+        return cls(strata=strata, sampled=tuple(np.zeros(0, dtype=np.int64) for _ in strata), p_hat=p_hat)
 
     @property
     def sizes(self) -> np.ndarray:
@@ -132,7 +183,10 @@ class StratifiedDesign:
         m = max(0, min(int(m), self.remaining))
         if m == 0:
             return self, np.zeros(0, dtype=np.int64)
-        target = allocate_cumulative(self.sizes, self.counts, m)
+        if self.p_hat is None:
+            target = allocate_cumulative(self.sizes, self.counts, m)
+        else:
+            target = allocate_neyman(self.sizes, self.counts, m, self.p_hat)
         new_sampled, new_rows = [], []
         for stratum, taken, want in zip(self.strata, self.sampled, target.tolist()):
             extra = want - taken.size
@@ -143,7 +197,7 @@ class StratifiedDesign:
                 taken = np.sort(np.concatenate([taken, chosen]))
             new_sampled.append(taken)
         rows = np.concatenate(new_rows) if new_rows else np.zeros(0, dtype=np.int64)
-        return StratifiedDesign(strata=self.strata, sampled=tuple(new_sampled)), rows
+        return StratifiedDesign(strata=self.strata, sampled=tuple(new_sampled), p_hat=self.p_hat), rows
 
     def sample(self) -> StratifiedSample:
         """All rows drawn so far with weights N_j / n_j (strata with n_j = 0 contribute nothing)."""

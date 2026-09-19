@@ -188,10 +188,48 @@ KNN_K_VALUES = ["auto"]
 RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "43"))
 # Patch R1: fraction of the total LLM budget the router may spend (env: LASO_ROUTER_CAP_FRAC).
 ROUTER_CAP_FRAC = float(os.environ.get("LASO_ROUTER_CAP_FRAC", "0.3"))
-# Learned calibration (design3 §2): total budget B, floor(0.6B) active sampling,
-# floor(0.1B) stratified calibration sample, the rest for fallback.
-LC_SAMPLE_FRAC = float(os.environ.get("LASO_LC_SAMPLE_FRAC", "0.6"))
-LC_CALIB_FRAC = float(os.environ.get("LASO_LC_CALIB_FRAC", "0.1"))
+# Learned calibration: the budget B pays for the active sample L (floor(0.8B)) and the stratified
+# calibration sample A (floor(0.2B)). Routing D is NOT part of B and has no cap: the dial alpha alone
+# decides how many unverified rows go to the LLM, so a run issues |L| + |A| + |D| calls with
+# |L| + |A| <= B. The capped accountings (LASO_LC_ROUTE_FRAC > 0 with LASO_LC_ROUTE_UNLIMITED=0, or
+# LASO_LC_ROUTE_BUDGET_MULT > 0) remain only to reproduce earlier results (results/lc_carve, lc_alpha_grid).
+LC_SAMPLE_FRAC = float(os.environ.get("LASO_LC_SAMPLE_FRAC", "0.8"))
+LC_CALIB_FRAC = float(os.environ.get("LASO_LC_CALIB_FRAC", "0.2"))
+LC_ROUTE_FRAC = float(os.environ.get("LASO_LC_ROUTE_FRAC", "0.0"))
+# Scales the total learned-calibration budget relative to the nominal budget_pct. 1.0 carves the
+# calibration sample and the router out of the budget; 1.5 with fracs 2/3, 4/15, 1/15 instead keeps
+# sampling at the full nominal budget and ADDS 0.4x for calibration and 0.1x for routing, matching how
+# PROBE's deferral router is charged. The calibration sample is LLM-labelled, so those calls are part
+# of the answer, not an overhead.
+LC_BUDGET_SCALE = float(os.environ.get("LASO_LC_BUDGET_SCALE", "1.0"))
+# Conservative fallback when the calibration sample A contains no positive: mix a Clopper-Pearson
+# upper bound into the anchoring target (Kim et al., arXiv:2606.08090 §5.2). 0 disables it.
+# 0.15 was picked by the sweep in results/lc_cp_sweep (5 lambda x 8 queries at 10%): it is the only
+# value that never lost against refusing, and it sits at the Beta posterior median of the bound.
+LC_CP_LAM = float(os.environ.get("LASO_LC_CP_LAM", "0.15"))
+LC_CP_ALPHA = float(os.environ.get("LASO_LC_CP_ALPHA", "0.05"))
+# Cost-quality dial on the routing stage. Routing is uncapped, so alpha = 1 would send every unverified
+# row to the LLM (full LLM execution). 0.5 is the knee of the B = 10% sweep in
+# results/lc_alpha_uncapped_grid (mean delegation 22%, quality within 0.04 of alpha = 1).
+LC_ALPHA = float(os.environ.get("LASO_LC_ALPHA", "0.5"))
+# Neyman allocation of the calibration sample A (with an inclusion floor); 0 restores the even split.
+LC_NEYMAN = os.environ.get("LASO_LC_NEYMAN", "1").lower() in {"1", "true", "yes", "on"}
+# 1 (default): top-up rounds of A may draw on whatever part of B that L and A left unspent. With no
+# routing share there is nothing else to draw on, so these rounds are rare.
+LC_FALLBACK_UNLIMITED = os.environ.get("LASO_LC_FALLBACK_UNLIMITED", "1").lower() in {"1", "true", "yes", "on"}
+# 1 (default): routing has no budget cap; alpha is the only thing deciding how many rows get verified.
+LC_ROUTE_UNLIMITED = os.environ.get("LASO_LC_ROUTE_UNLIMITED", "1").lower() in {"1", "true", "yes", "on"}
+# >0: routing gets its own budget of this multiple of B, on top of sampling+calibration (D <= mult*B).
+LC_ROUTE_BUDGET_MULT = float(os.environ.get("LASO_LC_ROUTE_BUDGET_MULT", "0"))
+# Calibrator arm: "platt" (a line in log-odds) or GAMCAL's spline (arXiv:2604.00660 App. A.2).
+LC_CALIBRATOR = os.environ.get("LASO_LC_CALIBRATOR", "platt")
+LC_GAM_RIDGE = float(os.environ.get("LASO_LC_GAM_RIDGE", "1.0"))
+LC_GAM_KNOTS = int(os.environ.get("LASO_LC_GAM_KNOTS", "8"))
+LC_GAM_STOCHASTIC = os.environ.get("LASO_LC_GAM_STOCHASTIC", "0") == "1"
+# Routing objective. cost_exp > 1 is what turns alpha from a switch into a dial under a budget cap:
+# see plan_dual_threshold's docstring for the measured alpha -> routed-fraction tables.
+LC_ROUTE_OBJECTIVE = os.environ.get("LASO_LC_ROUTE_OBJECTIVE", "pool")
+LC_ROUTE_COST_EXP = float(os.environ.get("LASO_LC_ROUTE_COST_EXP", "1.0"))
 
 # Active-learning sampler config (paper §3).
 ACTIVESAMPLING_VS_RATIO = 0.5            # explore fraction rho (env: LASO_VS_RATIO)
@@ -276,12 +314,37 @@ def _deferral_policy_for_ablation(ablation_label: str) -> str:
     return mode
 
 
+def _lc_phases(sample_budget: int) -> int:
+    """Active-learning rounds that fit in L's share.
+
+    Each round costs at least ~3 calls, so the configured 5 rounds need 15 calls. When L's share is
+    smaller than that the sampler used to overshoot and swallow the whole budget, leaving the
+    calibration sample A empty (70 of the 242 refusals in the 5-seed study). Cutting rounds keeps L
+    inside its share so A always gets its own.
+    """
+    return max(1, min(ACTIVESAMPLING_N_PHASES, int(sample_budget) // 3))
+
+
 def _learned_calibration_config(n_items: int, budget_pct: float) -> LearnedCalibrationConfig:
     """Per-run config for the +learned_calibration ablation (total-budget semantics)."""
     return LearnedCalibrationConfig(
-        total_budget=learned_calibration_total_budget(n_items, budget_pct),
+        total_budget=learned_calibration_total_budget(n_items, budget_pct * LC_BUDGET_SCALE),
         sample_frac=LC_SAMPLE_FRAC,
         calib_frac=LC_CALIB_FRAC,
+        route_frac=LC_ROUTE_FRAC,
+        alpha=LC_ALPHA,
+        neyman=LC_NEYMAN,
+        fallback_unlimited=LC_FALLBACK_UNLIMITED,
+        route_unlimited=LC_ROUTE_UNLIMITED,
+        route_budget_mult=LC_ROUTE_BUDGET_MULT,
+        cp_lam=LC_CP_LAM,
+        cp_alpha=LC_CP_ALPHA,
+        calibrator=LC_CALIBRATOR,
+        gam_ridge=LC_GAM_RIDGE,
+        gam_knots=LC_GAM_KNOTS,
+        gam_stochastic=LC_GAM_STOCHASTIC,
+        route_objective=LC_ROUTE_OBJECTIVE,
+        route_cost_exp=LC_ROUTE_COST_EXP,
         seed=RANDOM_SEED,
     )
 
@@ -289,6 +352,11 @@ spark = None
 all_results = []
 results_dir = "./results/activeSampling_grid/"
 INCLUDE_NO_OPT = os.environ.get("LASO_INCLUDE_NO_OPT", "0").lower() in {"1", "true", "yes", "on"}
+# Join pair representation for the LR proxy: "mean" reproduces the shipped behaviour,
+# "interaction" uses [cos, Pu*Pv, |Pu-Pv|] (docs/design/2026-09-17-join-repr-experiments.md).
+PAIR_FEATURE_MODE = os.environ.get("LASO_PAIR_FEATURE_MODE", "mean").strip().lower()
+if PAIR_FEATURE_MODE not in {"mean", "interaction"}:
+    raise SystemExit(f"LASO_PAIR_FEATURE_MODE must be mean or interaction, got {PAIR_FEATURE_MODE!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +365,7 @@ INCLUDE_NO_OPT = os.environ.get("LASO_INCLUDE_NO_OPT", "0").lower() in {"1", "tr
 # reproduces the original hardcoded behaviour exactly. Each experiments/*.sh
 # script exports only the variables it varies. See experiments/README.md.
 # ---------------------------------------------------------------------------
-_KNOWN_SAMPLERS = {"activeSampling", "random", "top_k", "uqe_active"}
+_KNOWN_SAMPLERS = {"activeSampling", "random", "top_k", "uqe_active", "stratified"}
 _KNOWN_ABLATION_PARTS = {"refine", "lr_only", "trust_proxy",
                          "learned_deferral", "dasp_topk", "learned_calibration"}
 
@@ -1187,11 +1255,20 @@ def calculate_pair_f1_factory(limit=None):
     return _score
 
 
+# Stage weights of the refinement (cluster_proxy.predict_with_score_refinement):
+#   Stage B "Correct" — residual diffusion on the kNN graph, weight diffusion_alpha
+#   Stage C "Smooth"  — homogeneity propagation, weight propagation_beta
+# Unset reproduces the previous hardcoded 0.8/0.8, so an ablation can disable a stage without
+# touching any other behaviour.
+REFINE_DIFFUSION_ALPHA = float(os.environ.get("LASO_REFINE_ALPHA", "0.8"))
+REFINE_PROPAGATION_BETA = float(os.environ.get("LASO_REFINE_BETA", "0.8"))
+
+
 def _overrides_for(query_tag: str, default_threshold: float) -> Dict[str, float]:
     return {
         "confidence_threshold": default_threshold,
-        "diffusion_alpha": 0.8,
-        "propagation_beta": 0.8,
+        "diffusion_alpha": REFINE_DIFFUSION_ALPHA,
+        "propagation_beta": REFINE_PROPAGATION_BETA,
     }
 
 
@@ -1295,8 +1372,10 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
     if _decision_mode_for_ablation(ablation_label) == LEARNED_CALIBRATION_MODE:
         _lc_cfg = _learned_calibration_config(total_pairs, budget_pct)
         _router_on, _router_cap, _budget = False, 0, _lc_cfg.sample_budget
+        _phases = _lc_phases(_lc_cfg.sample_budget)
         print(f"  budget split (learned_calibration): total={_lc_cfg.total_budget} "
-              f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} fallback=remaining")
+              f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} "
+              f"route={_lc_cfg.route_budget} phases={_phases}")
     else:
         _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
         _budget_total, _budget, _router_cap = split_total_budget(
@@ -1333,10 +1412,11 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
         propagation_beta=cfg["propagation_beta"],
         refine_enabled=refine_enabled,
         lr_feature_mode=feature_mode,
+        pair_feature_mode=PAIR_FEATURE_MODE,
         lr_class_weight_override="balanced",
         random_seed=RANDOM_SEED,
         activeSampling_vs_ratio=ACTIVESAMPLING_VS_RATIO,
-        activeSampling_n_phases=ACTIVESAMPLING_N_PHASES,
+        activeSampling_n_phases=(_phases if _lc_cfg is not None else ACTIVESAMPLING_N_PHASES),
         activeSampling_lr_blend_schedule=ACTIVESAMPLING_LR_BLEND_SCHEDULE,
         activeSampling_cold_start_phases=ACTIVESAMPLING_COLD_START_PHASES,
         defer_enabled=_cascade_decision_enabled(decision_mode),
@@ -1361,8 +1441,10 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
     if _decision_mode_for_ablation(ablation_label) == LEARNED_CALIBRATION_MODE:
         _lc_cfg = _learned_calibration_config(total_rows, budget_pct)
         _router_on, _router_cap, _budget = False, 0, _lc_cfg.sample_budget
+        _phases = _lc_phases(_lc_cfg.sample_budget)
         print(f"  budget split (learned_calibration): total={_lc_cfg.total_budget} "
-              f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} fallback=remaining")
+              f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} "
+              f"route={_lc_cfg.route_budget} phases={_phases}")
     else:
         _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
         _budget_total, _budget, _router_cap = split_total_budget(
@@ -1403,7 +1485,7 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
         lr_class_weight_override="balanced",
         random_seed=RANDOM_SEED,
         activeSampling_vs_ratio=ACTIVESAMPLING_VS_RATIO,
-        activeSampling_n_phases=ACTIVESAMPLING_N_PHASES,
+        activeSampling_n_phases=(_phases if _lc_cfg is not None else ACTIVESAMPLING_N_PHASES),
         activeSampling_lr_blend_schedule=ACTIVESAMPLING_LR_BLEND_SCHEDULE,
         activeSampling_cold_start_phases=ACTIVESAMPLING_COLD_START_PHASES,
         defer_enabled=_cascade_decision_enabled(decision_mode),
@@ -1607,6 +1689,9 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         "num_results": num_results, "precision": precision,
         "recall": recall, "f1": f1,
         "duration_s": round(duration, 2),
+        # Effective refinement stage weights, so a stage ablation is checkable from the results.
+        "refine_diffusion_alpha": REFINE_DIFFUSION_ALPHA,
+        "refine_propagation_beta": REFINE_PROPAGATION_BETA,
         # Rows labeled by the proxy oracle (0 for the no-opt baseline, which
         # evaluates every row/pair via Java). Kept for back-compat.
         "llm_calls": cluster_prof.get("n_labeled", "-"),
@@ -3574,7 +3659,12 @@ def _column_descriptor_df(sp, csv_path, side, sample_n=5):
         samples = " | ".join(vals) if vals else ""
         rows.append({f"{side}_colname": c, f"{side}_samples": samples})
     desc_pdf = pd.DataFrame(rows)
-    return sp.createDataFrame(desc_pdf)
+    # Use proxy_model's converter: PySpark 3.3's createDataFrame calls
+    # pandas.DataFrame.iteritems(), removed in pandas 2.x. Calling
+    # sp.createDataFrame directly only worked when some earlier query had already
+    # installed that compatibility alias, so match305 failed when run first.
+    from proxy_model import _pandas_to_spark
+    return _pandas_to_spark(sp, desc_pdf)
 
 
 def run_match305():

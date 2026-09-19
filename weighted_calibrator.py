@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 from scipy.optimize import brentq, minimize
 from scipy.special import expit
+from scipy.stats import beta
 
 __all__ = [
     "PlattParams",
@@ -86,12 +87,50 @@ def _objective(
     return loss, grad
 
 
-def fit_intercept_shift(z: np.ndarray, y: np.ndarray, w: np.ndarray, *, max_doublings: int = 60) -> float:
-    """Solve ``sum w*sigmoid(z+t) = sum w*y`` for t (unique when 0 < sum w*y < sum w)."""
+def clopper_pearson_upper(k: int, n: int, alpha: float) -> float:
+    """One-sided Clopper-Pearson upper bound on a binomial rate; 1.0 when n == 0."""
+    if n <= 0:
+        return 1.0
+    if k >= n:
+        return 1.0
+    return float(beta.ppf(1.0 - alpha, k + 1, n - k))
+
+
+def stratified_positive_target(y: np.ndarray, w: np.ndarray, *, lam: float, alpha: float) -> Tuple[float, Dict[str, Any]]:
+    """Expected positives in the pool, mixing the measured rate with a Clopper-Pearson upper bound.
+
+    Follows Kim et al. (arXiv:2606.08090 §5.2): ``(1-lam) * measured + lam * CP_upper`` per score range,
+    so a range the sample covers densely keeps its measured rate while a sparse one is inflated. Strata
+    are recovered from the inverse-inclusion weights (all rows of stratum j share w = N_j / n_j), and the
+    failure probability is split across strata (Bonferroni). With no positive anywhere in A the measured
+    part is 0 and the bound alone carries the target, which is what makes the intercept solvable.
+    """
+    y = np.asarray(y, dtype=np.float64).reshape(-1)
+    w = np.asarray(w, dtype=np.float64).reshape(-1)
+    if y.size == 0:
+        return 0.0, {"cp_strata": 0}
+    uniq = np.unique(w)
+    per_stratum_alpha = float(alpha) / max(1, uniq.size)
+    measured = upper = 0.0
+    for wj in uniq:
+        rows = w == wj
+        n_j = int(rows.sum())
+        k_j = int(y[rows].sum())
+        size_j = float(wj) * n_j                      # N_j = (N_j / n_j) * n_j
+        measured += size_j * (k_j / n_j)
+        upper += size_j * clopper_pearson_upper(k_j, n_j, per_stratum_alpha)
+    target = (1.0 - lam) * measured + lam * upper
+    return target, {"cp_strata": int(uniq.size), "cp_measured_pos": measured, "cp_upper_pos": upper,
+                    "cp_alpha_per_stratum": per_stratum_alpha}
+
+
+def fit_intercept_shift(z: np.ndarray, y: np.ndarray, w: np.ndarray, *, max_doublings: int = 60,
+                        target: Optional[float] = None) -> float:
+    """Solve ``sum w*sigmoid(z+t) = target`` for t, where target defaults to ``sum w*y``."""
     z = np.asarray(z, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     w = np.asarray(w, dtype=np.float64)
-    target = float(np.sum(w * y))
+    target = float(np.sum(w * y)) if target is None else float(target)
     if not 0.0 < target < float(np.sum(w)):
         raise ValueError("intercept shift needs both label classes in the weighted sample")
 
@@ -149,13 +188,21 @@ def calibrate(
     h_pool: np.ndarray,
     lam: float,
     rho: Tuple[float, float, float, float],
+    cp_lam: float = 0.0,
+    cp_alpha: float = 0.05,
 ) -> CalibrationFit:
     """Fit the A+L weighted Platt model, then the A-only intercept shift."""
     x_a, h_a, y_a, w_a = (np.asarray(v, dtype=np.float64).reshape(-1) for v in (x_a, h_a, y_a, w_a))
     h_pool = np.asarray(h_pool, dtype=np.float64).reshape(-1)
     diagnostics: Dict[str, Any] = {"n_a": int(y_a.size), **positive_weight_diagnostics(y_a, w_a)}
     problem = _evidence_problem(y_a, h_a, h_pool)
-    if problem:
+    # A with no positive at all normally stops the calibration: the intercept equation
+    # sum w*sigmoid(z+t) = 0 has no finite solution. With cp_lam > 0 the target becomes a
+    # Clopper-Pearson mix instead of the measured 0, so the level is anchored conservatively and the
+    # shape still comes from L. Without L there is nothing to give the shape, so keep refusing.
+    conservative = (problem == "single_class_in_A" and cp_lam > 0.0 and float(y_a.sum()) == 0.0
+                    and x_l is not None and y_l is not None and np.asarray(y_l).sum() > 0)
+    if problem and not conservative:
         return CalibrationFit(None, "insufficient_evidence", problem, diagnostics)
 
     l_rows = None
@@ -180,10 +227,16 @@ def calibrate(
         return CalibrationFit(None, "solver_failed", "lbfgsb_failed", diagnostics)
 
     z_a = a * x_a + b + c * h_a
+    cp_target = None
+    if conservative:
+        cp_target, cp_diag = stratified_positive_target(y_a, w_a, lam=cp_lam, alpha=cp_alpha)
+        diagnostics.update(cp_diag)
+        diagnostics["cp_target_pos"] = float(cp_target)
+        diagnostics["cp_used"] = True
     try:
-        t = fit_intercept_shift(z_a, y_a, w_a)
+        t = fit_intercept_shift(z_a, y_a, w_a, target=cp_target)
     except (RuntimeError, ValueError) as exc:
         return CalibrationFit(None, "solver_failed", f"intercept_shift_failed: {exc}", diagnostics)
     params = PlattParams(a=a, b=b, c=c, delta=d, t=t)
     diagnostics["intercept_residual"] = float(np.sum(w_a * expit(z_a + t)) - np.sum(w_a * y_a))
-    return CalibrationFit(params, "ok", "", diagnostics)
+    return CalibrationFit(params, "ok", "cp_conservative" if conservative else "", diagnostics)
