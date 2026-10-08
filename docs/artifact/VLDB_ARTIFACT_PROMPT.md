@@ -5,17 +5,17 @@
 ## 工作范围与论文版本
 
 - 代码仓库：当前 PROBE 工作区；目标分支为 `vldb-artifact`。该分支已从 `exp/budget-f1-curves` 的 `69eca25` 创建，本地仍有大量未提交的最新代码与实验文件。先检查 `git status`、worktree 和运行中的实验，逐项识别发布所需文件，不能把 HEAD 当成全部实现，也不能直接 `git add .`。
-- 论文工作区：优先读取 `PAPER_ROOT`；本环境为相邻目录 `../PROBE-VLDB`。2026 年 10 月 8 日首次核查时，论文 HEAD 为 `46d2c6a`，但正文有已暂存和未暂存修订，所以以工作区文件内容为准。
-- `docs/artifact/manuscript_snapshot.json` 保存首次核查的 SHA256。开工时核对文件哈希；论文发生更新时，重新读取受影响章节、更新对照表和快照。不要沿用旧结论，也不要自动覆盖论文。
+- 论文工作区：优先读取 `PAPER_ROOT`；本环境为相邻目录 `../PROBE-VLDB`。当前已核对 2026 年 10 月 8 日的论文提交 `815f9fb`，采样、传播、校准与实验协议已逐项复核。仍须以工作区文件内容为准，不能忽略后续已暂存和未暂存修订。
+- `docs/artifact/manuscript_snapshot.json` 保存本次核对的版本和 SHA256。开工时核对文件哈希；论文发生更新时，重新读取受影响章节、更新对照表和快照。不要沿用旧结论，也不要自动覆盖论文。
 - 必读 `main.tex` 实际启用的 inputs，以及 `sections/02_background.tex`、`03_sampling.tex`、`04_label_propagation.tex`、`05_learned_guided_fallback.tex`、`06_evaluation.tex`、`figures/sas_flow.tex`、`tables/best_points.tex`。跟踪每个图表使用的数据、工作簿和绘图脚本。
 - `sections/09_appendix.tex` 当前存在，但其 input 在 `main.tex` 中被注释。单独审查其中参数、敏感性实验和校准说明，标明它是否属于最终提交版本，不能把它无条件当作已启用正文。
 - 历史 README、`experiments/PLAN_PROMPT.md`、旧 LASO/SIGMOD 计划和 `docs/design/` 中的早期 prompt 仅作线索。若与最新版论文冲突，以新版论文为实现目标，把冲突及证据记录下来。不要通过修改论文来掩盖代码或结果差异。
 
-本次授权包括开源整理分支和默认分支设置。先完成可审查的提交，再正常推送；有管理员权限时设置 GitHub 默认分支并读回验证。当前已核查的 Git 凭据和 GitHub 连接器均只有 pull 权限，远端默认仍为 `main`。无权限时完成所有本地工作，明确报告待执行的远端动作；本地切换分支或设置 `origin/HEAD` 不代表远端默认分支已修改。
+本次授权包括开源整理分支和默认分支设置。开工时读取远端实际默认分支、分支 SHA 和当前凭据权限；已经完成的设置无需重复变更。先完成可审查的提交，再正常推送；有管理员权限时设置 GitHub 默认分支并读回验证。无权限时完成所有本地工作，明确报告待执行的远端动作；本地切换分支或设置 `origin/HEAD` 不代表远端默认分支已修改。
 
 ## 算法对齐要求
 
-建立 `docs/artifact/algorithm_alignment.md`，逐项列出论文 label/公式/算法行、实现函数、实际生效配置、差异、修复和验证证据。以下内容来自首次核查的最新版正文，后续仍需与实时论文核对。
+建立 `docs/artifact/algorithm_alignment.md`，逐项列出论文 label/公式/算法行、实现函数、实际生效配置、差异、修复和验证证据。以下内容已与论文 `815f9fb` 的正文核对，后续仍需与实时论文核对。
 
 1. **固定排序与特征。** 默认以 Qwen3-VL-Reranker-2B 对谓词和候选行联合编码，一次按分数降序排序。Join 必须联合编码谓词及左右两行；保持原始 candidate ID 和列的对应关系。代理训练及图构建使用同次 CE 前向的 last-token hidden state，经单位归一化和 256 维 PCA。查验归一化与投影顺序、拟合范围和小样本约定。旧的多轮 SigLIP/LR 混合重排不能作为新版默认流程。
 2. **预算。** `B` 是采样加校准的准备预算；`B_L=floor(0.8B)`、`B_A=B-B_L`。路由和 S3 全查询 fallback 在 `B` 之外，不能为了维持旧 hard cap 改变论文行为。稳定 ID 去重、已知标签复用，同时分别记录候选标签数、物理请求数、失败和重试成本。
@@ -61,6 +61,8 @@
 | LRO 202 | 384 | LRO 305 | 1,421 |
 
 主 expert 为 Gemma 4 26B-A4B，共用 vLLM batching 和 prompts。基线协议按最新版正文执行：LOTUS 用 Qwen3-VL-2B token log-probability proxy、precision/recall 0.9、delta 0.1、sampling 10%；BARGAIN accuracy mode 0.9、delta 0.1，复用 PROBE refined proxy；ScaleDoc training/calibration 各 5%、F1 target 0.9；CSV cluster 数 4/2、每层 sampling 10%、一致率 90%；AIQA 使用 UQE active sampling；no-proxy 对所有候选调用同一 expert。不要把历史独立 BARGAIN proxy、learned_deferral 或单 seed case grid 当作新版主实验。
+
+对论文 `815f9fb` 新版正文的主要数值结论建立独立核验条目：默认 PROBE/no-proxy geometric-mean F1 为 0.762/0.797、PROBE geometric-mean delegation 为 12.8%、speedup 为 4.88 倍；默认 ScaleDoc/BARGAIN/LOTUS geometric-mean F1 为 0.530/0.628/0.484，其 median delegation 为 81%/21%/80%。逐项核对这些统计的 query coverage、真实运行来源和聚合口径，不能把默认配置的 median 与完整 sweep 的 median 混用。数值是论文需要证据支持的结论，不能据此填造或手调 raw results。
 
 候选实现与数据线索包括 `experiments/gemma4/`、`fig_gemma4/`、`tradeoff/`、`best_points/`、`sampling_ablation/`、`sas_ablation_ci/`、`stage_ablation/`、`calib_ablation/`、`encoder_ablation_ci/`、`mllm/`、`time_breakdown/`、`fixed_ce/`、`paper_data/`、`paper_figures/`、根目录 `paper_figures/` 和论文 `data/*.xlsx`。先追踪 provenance，再选正式入口；目录名、文件时间和已有 PDF 不能证明协议匹配或实验完成。
 
