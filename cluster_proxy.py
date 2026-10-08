@@ -3426,7 +3426,7 @@ def cluster_proxy_pipeline(
     lr_C: float = 1.0,
     base_threshold: Optional[float] = None,
     lr_class_weight_override: Optional[str] = None,
-    random_seed: Optional[int] = 42,
+    random_seed: Optional[int] = 0,
     viz_tag: str = "",
     activeSampling_backend: str = "fixed_ce",
     fixed_ce_config: Optional[Any] = None,

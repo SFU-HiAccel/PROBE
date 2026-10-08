@@ -1,7 +1,8 @@
 {
-  "observed_at_utc": "2026-10-08T21:39:04.228603+00:00",
-  "scope": "351 tests before addition of 3 report tests and final documentation; rerun required for final tree",
-  "result": "351 passed",
-  "command": "JAVA_HOME=<installed Java11> SPARK_LOCAL_IP=127.0.0.1 python -m pytest -q tests --tb=short",
-  "log_sha256": "2e7fb1155aa30f76065bdaf3550b85ff822b08a342686c2b31dadeb6d21d29cd"
+  "observed_at_utc": "2026-10-08T21:53:28.044579+00:00",
+  "scope": "Complete release test suite in a fresh Python3.12 client venv, including public seed consistency and oracle journaling",
+  "result": "356 passed",
+  "command": "JAVA_HOME=<Java11> SPARK_LOCAL_IP=127.0.0.1 python -m pytest -q tests --tb=short",
+  "log_sha256": "3210455397c55500992f94c85fa03ad5b63cd341504e3117da94e1ba944fe6b7",
+  "client_installation": "Fresh pip install requirements.core.txt, then requirements.client.txt; full resolved closure saved in requirements.client.lock.txt"
 }

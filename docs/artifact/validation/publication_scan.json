@@ -1,0 +1,264 @@
+{
+  "scope": "Selected publish sources/records and all reachable refs when --history; pattern scan is not an exhaustive secret detector",
+  "current_findings": [],
+  "historical_findings": [
+    {
+      "blob": "3d42be68ff8c632296cd07e9db602eb1bbad9359",
+      "file": "third_party/bargain/examples/bargain_galaxy/queries.py",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            39
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "fdd19c5cc3339b1df6b4e4bf2aabab9fba69893b",
+      "file": "third_party/sembench/src/runner/generic_runner.py",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            72
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "afaaee7aa36199f845cf30affc4c6c4739654445",
+      "file": "third_party/sembench/src/temp_plot_reasoning.py",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 5,
+          "lines": [
+            32,
+            33,
+            34,
+            35,
+            149
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "921ed4d3fb6f7d2f8c249224a12a61d4b7355a7b",
+      "file": "docs/experiments/2026-09-20-locate-threshold-zp-plan.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "6cc86d9e474e4c452959ba319487bd18c4c5cbae",
+      "file": "docs/explainer/slides/gen_walkthrough.py",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 2,
+          "lines": [
+            3,
+            4
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "9b883b45e1410ea6eefdda654b7fe09d803d57b7",
+      "file": "experiments/13_lt_zp_rerun.sh",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 4,
+          "lines": [
+            15,
+            17,
+            19,
+            30
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "f0375da78b627589ea05b05e46eedfcfba1be494",
+      "file": "experiments/14_single_vs_multiple.sh",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 4,
+          "lines": [
+            10,
+            12,
+            16,
+            27
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "d3c0a3a1a95f56c871fd36247ce7f6fd8a41bebf",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            313
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "0061d6fa89c9d0abd023250129e8e381c593e5f5",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            313
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "01dc30715f1963ed6f166bee60d2d647d55c1f70",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            313
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "298e115130345c34252fa7692d3b560d34899226",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 4,
+          "lines": [
+            319,
+            373,
+            424,
+            428
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "cb5b00e0e01917cae60d8ddf707883a86613fc57",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 3,
+          "lines": [
+            243,
+            473,
+            499
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "2d2472ddbbbdc738990cef74cdcd22728b116400",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 4,
+          "lines": [
+            243,
+            464,
+            505,
+            535
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "cb32e2bd70046d6483baf51e28af4672bf26244f",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 3,
+          "lines": [
+            243,
+            464,
+            505
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "d9f28e1b024fa776d9d292036046a589cd808fb9",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            243
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "5c6e0488878d4adcf7b163769d9efa18e0f1f329",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 2,
+          "lines": [
+            212,
+            256
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "10d3d4e937e53d9dc9b3e95adaafeaab9541e87b",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            366
+          ]
+        }
+      ]
+    },
+    {
+      "blob": "07d4d7665d1afa2d2167c02d5c7eb8892a167021",
+      "file": "README.md",
+      "findings": [
+        {
+          "type": "personal_absolute_path",
+          "count": 1,
+          "lines": [
+            445
+          ]
+        }
+      ]
+    }
+  ],
+  "reachable_blobs_scanned": 799,
+  "policy": "No secret values emitted; no automatic history rewrite"
+}

@@ -7,6 +7,15 @@ import proxy_model
 import sem_ops_register
 
 
+def test_public_seed_defaults_and_calibration_resolution_agree():
+    for fn in (proxy_model.proxy_filter, proxy_model.proxy_join,
+               sem_ops_register.sem_filter_impl, sem_ops_register.sem_join_impl):
+        assert inspect.signature(fn).parameters["random_seed"].default == 0
+    sample, mode, config, defer = proxy_model._resolve_paper_operator(
+        100, 10, None, "activeSampling", "fixed_ce", None, None, False, seed=9)
+    assert (sample, mode, config.seed, defer) == (8, "learned_calibration", 9, True)
+
+
 @pytest.mark.parametrize("fn", [
     proxy_model.proxy_filter, proxy_model.proxy_join,
     sem_ops_register.sem_filter_impl, sem_ops_register.sem_join_impl,

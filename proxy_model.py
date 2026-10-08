@@ -3556,14 +3556,14 @@ def _make_fixed_ce_oracle(texts, model, url, system_prompt, max_tokens,
 
 
 def _resolve_paper_operator(n, sample_size, budget_size, sampling_method, backend,
-                            decision_mode, config, defer_enabled):
+                            decision_mode, config, defer_enabled, seed=0):
     """Resolve default public execution; explicit legacy decisions stay explicit."""
     if decision_mode is None:
         if sampling_method == "activeSampling" and backend == "fixed_ce":
             from learned_calibration import paper_calibration_config
             if config is None:
                 b = min(n, sample_size if budget_size is None else budget_size)
-                config = paper_calibration_config(max(0, int(b)))
+                config = paper_calibration_config(max(0, int(b)), seed=int(seed or 0))
             decision_mode, defer_enabled = "learned_calibration", True
         else:
             decision_mode = "force_label"
@@ -3641,7 +3641,7 @@ def proxy_filter(
     lr_C: float = 1.0,
     base_threshold: Optional[float] = None,
     lr_class_weight_override: Optional[str] = None,
-    random_seed: Optional[int] = 42,
+    random_seed: Optional[int] = 0,
     viz_tag: str = "",
     activeSampling_backend: str = "fixed_ce",
     fixed_ce_config: Optional[Any] = None,
@@ -3695,7 +3695,7 @@ def proxy_filter(
 
     sample_size, decision_mode, learned_calibration_config, defer_enabled = _resolve_paper_operator(
         total_rows, sample_size, budget_size, sampling_method, activeSampling_backend,
-        decision_mode, learned_calibration_config, defer_enabled)
+        decision_mode, learned_calibration_config, defer_enabled, random_seed)
     ce_only = _repr_mode() == "ce" and activeSampling_backend == "fixed_ce"
     logger.info(f"Embedding {total_rows} rows...")
     t0_emb = time.time()
@@ -4131,7 +4131,7 @@ def proxy_join(
     lr_C: float = 1.0,
     base_threshold: Optional[float] = None,
     lr_class_weight_override: Optional[str] = None,
-    random_seed: Optional[int] = 42,
+    random_seed: Optional[int] = 0,
     viz_tag: str = "",
     activeSampling_backend: str = "fixed_ce",
     fixed_ce_config: Optional[Any] = None,
@@ -4208,7 +4208,7 @@ def proxy_join(
 
     sample_size, decision_mode, learned_calibration_config, defer_enabled = _resolve_paper_operator(
         total_pairs, sample_size, budget_size, sampling_method, activeSampling_backend,
-        decision_mode, learned_calibration_config, defer_enabled)
+        decision_mode, learned_calibration_config, defer_enabled, random_seed)
     ce_only = _repr_mode() == "ce" and activeSampling_backend == "fixed_ce"
     ce_only = ce_only and int(os.environ.get("PROBE_BLOCKING_K", "0")) == 0
     # ---- Embedding Phase ----
