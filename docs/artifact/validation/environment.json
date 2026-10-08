@@ -1,0 +1,32 @@
+{
+  "client": {
+    "python": "3.12.12",
+    "packages": {
+      "numpy": "1.26.4",
+      "scipy": "1.17.1",
+      "scikit-learn": "1.8.0",
+      "pandas": "2.3.1",
+      "pyspark": "3.3.1",
+      "pyarrow": "23.0.0",
+      "torch": "2.9.1",
+      "transformers": "5.3.0",
+      "openai": "2.6.1"
+    },
+    "java": "Java11 Zulu11.2+3"
+  },
+  "scope": "Observed installed environments; does not establish the original paper environment or the exact loaded module versions of a pre-existing server",
+  "server_installed_metadata": {
+    "python": "3.13.0",
+    "packages": {
+      "vllm": "0.23.0",
+      "torch": "2.11.0",
+      "transformers": "5.12.1",
+      "openai": "2.18.0"
+    }
+  },
+  "server_runtime": "Pre-existing Gemma4 server, tensor_parallel=2, memory_fraction=.8, prefix_cache enabled, max_model_len32768; live model/module revisions not attested",
+  "hardware": [
+    "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, 590.48.01, 97887 MiB",
+    "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition, 590.48.01, 97887 MiB"
+  ]
+}

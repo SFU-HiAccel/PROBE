@@ -133,3 +133,39 @@ class TestStratifiedDesignRounds:
         design, _ = design.draw(20, np.random.default_rng(4))
         b = design.sample()
         assert np.array_equal(a.indices, b.indices) and np.allclose(a.weights, b.weights)
+
+
+class TestNeymanAllocation:
+    """Neyman tilts the draws towards strata that can hold positives, but never starves one."""
+
+    def test_tilts_towards_the_informative_strata(self):
+        from stratified_calibration import allocate_neyman
+        sizes = np.array([1000, 1000, 1000])
+        counts = np.zeros(3, dtype=np.int64)
+        p_hat = np.array([0.001, 0.02, 0.4])           # rising positive rate with the score
+        got = allocate_neyman(sizes, counts, 90, p_hat)
+        assert got.sum() == 90
+        assert got[2] > got[1] > got[0]
+
+    def test_every_stratum_keeps_a_nonzero_inclusion_probability(self):
+        from stratified_calibration import allocate_neyman
+        sizes = np.array([500, 500, 500, 500])
+        p_hat = np.array([0.0, 0.0, 0.0, 0.9])         # only one stratum looks informative
+        got = allocate_neyman(sizes, np.zeros(4, dtype=np.int64), 40, p_hat)
+        assert got.sum() == 40
+        assert (got > 0).all(), f"a stratum received no draws: {got}"
+
+    def test_design_weights_still_invert_the_inclusion_probability(self):
+        from stratified_calibration import StratifiedDesign
+        rng = np.random.default_rng(0)
+        pool = np.arange(600)
+        scores = np.linspace(0.0, 1.0, 600)
+        design = StratifiedDesign.build(pool, scores, n_bins=6, max_strata=6, neyman=True)
+        design, _ = design.draw(60, rng)
+        smp = design.sample()
+        for size, n, w in zip(smp.stratum_sizes, smp.sample_counts, np.unique(smp.weights)):
+            pass                                        # weights are checked per row below
+        for stratum, taken in zip(design.strata, design.sampled):
+            if taken.size:
+                w = stratum.size / taken.size
+                assert np.isclose(smp.weights[np.isin(smp.indices, taken)], w).all()

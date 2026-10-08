@@ -1,4 +1,6 @@
 """Tests for the learned-calibration orchestrator (design3 §2-§7, §9)."""
+import time
+
 import numpy as np
 import pytest
 from scipy.special import expit
@@ -34,14 +36,15 @@ class _CountingLabeller:
 class TestConfig:
     def test_budget_split(self):
         cfg = LearnedCalibrationConfig(total_budget=100)
-        assert (cfg.sample_budget, cfg.calib_budget) == (60, 10)
+        # L 50% + A 40% + D 10% of B; the fallback is paid for out of D's share.
+        assert (cfg.sample_budget, cfg.calib_budget, cfg.route_budget) == (50, 40, 10)
 
     def test_rejects_fractions_over_one(self):
         with pytest.raises(ValueError):
             LearnedCalibrationConfig(total_budget=100, sample_frac=0.95, calib_frac=0.1)
 
     def test_total_budget_floor(self):
-        assert learned_calibration_total_budget(50, 1.0) == 10
+        assert learned_calibration_total_budget(50, 1.0) == 0
         assert learned_calibration_total_budget(10000, 5.0) == 500
 
 
@@ -104,7 +107,7 @@ class TestRunLearnedCalibration:
         assert res.diagnostics["lc_lambda_used"] == 0.0
         assert f1(res.final_pos) > f1(h > 0.5)
 
-    def test_all_negative_world_spends_leftover_in_stratified_rounds_then_refuses(self):
+    def test_all_negative_world_stops_after_the_routing_share_then_refuses(self):
         x, h, _, labeled = _world(seed=4)
         y_true = np.zeros(x.size, dtype=np.int32)
         labeller = _CountingLabeller(y_true)
@@ -113,11 +116,14 @@ class TestRunLearnedCalibration:
                                       oof=OofFeatures(None, None, "skipped"), label_rows=labeller, config=cfg)
         assert res.status == "insufficient_evidence"
         assert res.diagnostics["lc_reason"] == "single_class_in_A"
-        assert labeled.size + len(labeller.rows) == cfg.total_budget
-        # every leftover call joins the probability sample A; nothing is routed
+        # A gets its own 40% plus one fallback round paid from D's 10%; the rest of B is NOT spent.
+        assert res.calib_idx.size == cfg.calib_budget + cfg.route_budget
+        # spend is L + A + D's share and never more than B; whatever the fallback leaves is not spent
+        assert len(labeller.rows) == cfg.calib_budget + cfg.route_budget
+        assert labeled.size + len(labeller.rows) <= cfg.total_budget
         assert res.verify_idx.size == 0
-        assert res.calib_idx.size == cfg.total_budget - labeled.size
-        assert res.diagnostics["lc_fallback_rounds"] == 4  # 30 initial + 4 rounds of 30 = 150 calls
+        assert res.diagnostics["lc_fallback_rounds"] == 1
+        assert res.diagnostics["lc_fallback_used"] == cfg.route_budget
         assert np.isnan(res.diagnostics["lc_estimated_f1"])
 
     def test_missing_logit_spends_leftover_in_rounds_without_calibration(self):
@@ -149,13 +155,16 @@ class TestRunLearnedCalibration:
         cfg = LearnedCalibrationConfig(total_budget=400, seed=13)
         res = run_learned_calibration(x=x, h=h, labeled_indices=labeled, labeled_values=y_true[labeled],
                                       oof=OofFeatures(None, None, "skipped"), label_rows=labeller, config=cfg)
-        assert calls == [40, 80]
+        # first draw = calib_budget (160), fallback round = what is left of D's share (40)
+        assert calls == [cfg.calib_budget, cfg.calib_budget + cfg.route_budget]
         assert res.status == "routed_after_fallback"
         assert res.diagnostics["lc_fallback_rounds"] == 1
-        assert res.calib_idx.size == 80
+        assert res.calib_idx.size == cfg.calib_budget + cfg.route_budget
         assert labeled.size + len(labeller.rows) <= cfg.total_budget
         assert len(labeller.rows) == len(set(labeller.rows))
-        assert res.verify_idx.size == cfg.total_budget - labeled.size - 80
+        # the fallback used up D's share, so nothing is left to route
+        assert res.diagnostics["lc_fallback_used"] == cfg.route_budget
+        assert res.verify_idx.size == 0
 
     def test_first_round_success_keeps_plain_routed_status(self):
         x, h, y_true, labeled = _world(seed=14)
@@ -184,9 +193,9 @@ def test_routing_orders_rows_by_raw_logit_not_saturated_probability(monkeypatch)
     captured = {}
     real_plan = lc.plan_dual_threshold
 
-    def spy(row_idx, p, s, h_arg, counts, budget):
+    def spy(row_idx, p, s, h_arg, counts, budget, **kw):
         captured["rows"], captured["key"] = row_idx, s
-        return real_plan(row_idx, p, s, h_arg, counts, budget)
+        return real_plan(row_idx, p, s, h_arg, counts, budget, **kw)
 
     monkeypatch.setattr(lc, "plan_dual_threshold", spy)
     res = run_learned_calibration(x=x, h=h, labeled_indices=labeled, labeled_values=y_true[labeled],
@@ -197,3 +206,79 @@ def test_routing_orders_rows_by_raw_logit_not_saturated_probability(monkeypatch)
     assert np.array_equal(captured["key"], x[captured["rows"]])
     tau = res.diagnostics["lc_tau_plus"]
     assert np.isnan(tau) or 0.0 <= tau <= 1.0
+
+
+class TestConservativeClopperPearson:
+    """A with no positive: cp_lam > 0 anchors the level on a bound instead of refusing."""
+
+    def test_zero_positive_A_routes_conservatively_instead_of_refusing(self):
+        x, h, y_true, labeled = _world(seed=21)
+        # Force A to see only negatives by labelling every row outside L as 0.
+        y_a_world = y_true.copy()
+        y_a_world[np.setdiff1d(np.arange(x.size), labeled)] = 0
+        labeller = _CountingLabeller(y_a_world)
+        common = dict(x=x, h=h, labeled_indices=labeled, labeled_values=y_true[labeled],
+                      oof=OofFeatures(x[labeled], h[labeled], ""), label_rows=labeller)
+
+        strict = run_learned_calibration(config=LearnedCalibrationConfig(total_budget=400, seed=3), **common)
+        assert strict.status == "insufficient_evidence"
+        assert strict.verify_idx.size == 0
+
+        labeller2 = _CountingLabeller(y_a_world)
+        common2 = dict(common, label_rows=labeller2)
+        lenient = run_learned_calibration(
+            config=LearnedCalibrationConfig(total_budget=400, seed=3, cp_lam=0.06), **common2)
+        assert lenient.status == "routed_conservative"
+        assert lenient.verify_idx.size > 0
+        d = lenient.diagnostics
+        assert d["lc_cp_used"] is True
+        # measured positives are 0, so the bound alone carries the target
+        assert d["lc_cp_measured_pos"] == 0.0
+        assert 0.0 < d["lc_cp_target_pos"] <= d["lc_cp_upper_pos"]
+
+    def test_bound_shrinks_towards_the_measured_rate_as_the_sample_grows(self):
+        from weighted_calibrator import clopper_pearson_upper, stratified_positive_target
+
+        assert clopper_pearson_upper(0, 10, 0.05) > clopper_pearson_upper(0, 1000, 0.05)
+        assert clopper_pearson_upper(0, 1000, 0.05) == pytest.approx(3.0 / 1000, rel=0.1)
+        # dense sample: mixing barely moves the target away from the measured count
+        y = np.array([1.0] * 50 + [0.0] * 450)
+        w = np.full(500, 2.0)
+        target, diag = stratified_positive_target(y, w, lam=0.06, alpha=0.05)
+        assert diag["cp_measured_pos"] == pytest.approx(100.0)
+        assert target == pytest.approx(100.0, rel=0.05)
+
+
+class TestStageTimers:
+    def test_reports_sample_fit_and_route_times(self):
+        """The A-labelling, fitting and routing times are reported and sum to lc_time_s."""
+        import numpy as np
+        from learned_calibration import LearnedCalibrationConfig, OofFeatures, run_learned_calibration
+
+        rng = np.random.default_rng(0)
+        n = 800
+        y = (rng.random(n) < 0.25).astype(int)
+        x = np.where(y == 1, 1.0, -1.0) + rng.normal(0, 1.2, n)
+        h = (x > 0).astype(float)
+        cfg = LearnedCalibrationConfig(total_budget=200, sample_frac=0.8, calib_frac=0.2,
+                                       route_frac=0.0, route_unlimited=True, alpha=0.9, seed=0)
+        l_idx = rng.choice(n, cfg.sample_budget, replace=False)
+
+        def label_rows(rows):
+            time.sleep(0.01)          # make the labelling cost visible in the timers
+            return y[rows]
+
+        t0 = time.perf_counter()
+        res = run_learned_calibration(
+            x=x, h=h, labeled_indices=l_idx, labeled_values=y[l_idx],
+            oof=OofFeatures(None, None, "n/a"), label_rows=label_rows, config=cfg)
+        elapsed = time.perf_counter() - t0
+        d = res.diagnostics
+        for key in ("lc_time_sample_s", "lc_time_fit_s", "lc_time_route_s"):
+            assert key in d and d[key] >= 0.0
+        assert res.calib_idx.size > 0 and d["lc_time_sample_s"] > 0.0
+        if res.verify_idx.size:
+            assert d["lc_time_route_s"] > 0.0
+        parts = d["lc_time_sample_s"] + d["lc_time_fit_s"] + d["lc_time_route_s"]
+        assert parts <= elapsed + 1e-6           # the parts are disjoint spans of this call
+        assert parts >= 0.5 * elapsed            # and cover most of it

@@ -35,6 +35,7 @@ def _run(emb, sims, texts, factory, **kw):
     return cp.cluster_proxy_pipeline(
         emb, texts, factory, sampling_method="activeSampling", similarities=sims,
         refine_enabled=True, defer_enabled=True, activeSampling_n_phases=5,
+        activeSampling_backend="legacy",  # historical router wiring regression
         random_seed=0, knn_k=10, **kw)
 
 
@@ -101,3 +102,37 @@ def test_sample_size_above_config_sample_budget_is_rejected():
         _run(emb, sims, texts, _factory(y, calls), sample_size=120,
              decision_mode="learned_calibration", learned_calibration_config=cfg)
     assert calls == []
+
+
+def test_refined_calib_input_feeds_the_graph_refined_score(monkeypatch):
+    """calib_input='refined': run_learned_calibration receives logit(z_smooth) as x_cal, and the OOF
+    features of L come from each fold's refined score rather than the LR logit."""
+    seen = {}
+    real = learned_calibration.run_learned_calibration
+
+    def spy(**kw):
+        seen.update(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(learned_calibration, "run_learned_calibration", spy)
+    real_refine = cp.predict_with_score_refinement
+    finals = []
+
+    def refine_spy(*a, **k):
+        out = real_refine(*a, **k)
+        finals.append(out[1])
+        return out
+
+    monkeypatch.setattr(cp, "predict_with_score_refinement", refine_spy)
+    emb, sims, texts, y = _synthetic()
+    cfg = LearnedCalibrationConfig(total_budget=120, seed=0, calib_input="refined")
+    mask, prof = _run(emb, sims, texts, _factory(y, []), sample_size=cfg.sample_budget,
+                      decision_mode="learned_calibration", learned_calibration_config=cfg)
+    assert prof["lc_calib_input"] == "refined"
+    x_cal = seen["x_cal"]
+    assert x_cal is not None and not np.allclose(x_cal, seen["x"])
+    # x_cal is the logit of the main refinement's final score (the first refinement call)
+    assert np.allclose(x_cal, learned_calibration.refined_logit(finals[0]))
+    if seen["oof"].x is not None:
+        # OOF features are on the refined scale, i.e. inside the clipped logit range of z in [0, 1]
+        assert np.all(np.abs(seen["oof"].x) <= abs(learned_calibration.refined_logit(np.array([0.0])))[0] + 1e-9)

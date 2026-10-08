@@ -36,7 +36,7 @@ from bargain_galaxy.vllm_models import BargainRecord
 # LROBENCH_DATABASES_DIR -> the LROBench/BIRD database CSV root (see README "Datasets")
 SEMBENCH_ROOT = (
     os.environ.get("SEMBENCH_ROOT")
-    or os.environ.get("LASO_DATA_PATH")  # the SemBench "files" dir, e.g. /localhome/hza214/SemBench/files
+    or os.environ.get("LASO_DATA_PATH")  # the SemBench "files" dir, e.g. /path/to/prepared-data/SemBench/files
     or os.path.join(os.environ.get("LLMSQL_DATA_ROOT", "."), "SemBench", "files")
 )
 LROBENCH_DATABASES_DIR = os.environ.get(

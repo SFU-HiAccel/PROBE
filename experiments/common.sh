@@ -5,6 +5,14 @@
 # `laso_run`. Unset variables fall back to run.py's built-in defaults, so the
 # scripts change ONLY what their experiment varies.
 set -euo pipefail
+# Historical entry points: these retain the saved pre-VLDB protocol explicitly.
+export PROBE_SAMPLING_CONFIG='{"protocol":"legacy","pilot_mode":"hybrid","pilot_fraction":0.1,"n_min":1}'
+export PROBE_REPR=mixed
+export PROBE_KNN_PROTOCOL=legacy
+export LASO_LC_SAMPLE_FRAC=0.5 LASO_LC_CALIB_FRAC=0.4 LASO_LC_ROUTE_FRAC=0.1
+export LASO_LC_BUDGET_SCOPE=all LASO_LC_ROUTE_UNLIMITED=0 LASO_LC_CALIB_INPUT=proxy
+export PROBE_CALIBRATION_PROTOCOL=legacy
+
 
 # Repo root = parent of the experiments/ directory.
 _EXP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,0 +1,12 @@
+{
+  "workbook": {
+    "path": "../PROBE-VLDB/data/latest_paper_data.xlsx",
+    "sha256": "78d937c42c50e9497ad8a8a7c24b18908d06de5c25ff48aeafa1236c009acb8c",
+    "evidence_status": "presentation only; not raw experiment evidence"
+  },
+  "observations": [
+    "Fig9_Alpha documents 13 queries, CarsQ8 exclusion, mixed seeds0/1 and edited aggregates",
+    "T2_Latency_Simulation contains historical simulated timing; exclude from measured timing evidence"
+  ],
+  "audited_manuscript_revision": "a48d421c127ffe8d802644fecfd2b966dd494ee0"
+}

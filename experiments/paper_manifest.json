@@ -1,0 +1,1140 @@
+{
+  "schema_version": 1,
+  "paper_revision": "a48d421c127ffe8d802644fecfd2b966dd494ee0",
+  "protocol": {
+    "identity": "paper",
+    "sampling": {
+      "protocol": "paper",
+      "backend": "fixed_ce",
+      "batch_size": 32,
+      "pilot_mode": "uniform",
+      "pilot_fraction": 0.3,
+      "n_min": 2,
+      "p_star": 0.05,
+      "delta_sel": 0.05,
+      "explore_fraction": 0.25,
+      "train_strata": 10,
+      "k_max": 6,
+      "mu": 1.5
+    },
+    "representation": {
+      "model": "Qwen/Qwen3-VL-Reranker-2B",
+      "revision": "4bd860ac4f15ad1897a214615cccc700f8f71818",
+      "features": "same-pass last-token hidden state; L2 -> PCA256 -> L2"
+    },
+    "budget": {
+      "scope": "preparation",
+      "L": "floor(4*B/5)",
+      "A": "B-L",
+      "D": "uncapped",
+      "S3": "uncapped remaining unique IDs"
+    },
+    "refinement": {
+      "lr_C": 1.0,
+      "class_weight": "balanced",
+      "knn_k": "min(N-1, round(3log2N)); active-body choice",
+      "normalization": "row",
+      "alpha": 0.8,
+      "beta": 0.8,
+      "iterations": [
+        50,
+        50
+      ],
+      "threshold": 0.5
+    },
+    "calibration": {
+      "input": "refined_score_logit",
+      "strata": "equal-width refined score",
+      "floor_share": 0.2,
+      "folds": "min(5,n_pos,n_neg)",
+      "model": "univariate Platt + L-only offset",
+      "zeta": 0.25,
+      "ridge": "0.5 xi^2 only",
+      "targets": "Platt-smoothed using pooled A and L class counts",
+      "anchor": "A-only inverse inclusion weighted",
+      "cp_mixture": 0.15,
+      "cp_alpha": 0.05,
+      "cp_status": "regularization heuristic"
+    },
+    "routing": {
+      "alpha": 0.5,
+      "objective": "alpha*(1-estimated F1)+(1-alpha)*delegation",
+      "search": "dual prefixes + Dinkelbach"
+    }
+  },
+  "workloads": {
+    "mmqa_q2a": {
+      "N": 10400,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_MMQA_SF": "800"
+      }
+    },
+    "mmqa_q7": {
+      "N": 230400,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_MMQA_SF": "200"
+      }
+    },
+    "ecomm_q7": {
+      "N": 525625,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_ECOMM_SF": "250"
+      }
+    },
+    "ecomm_q8": {
+      "N": 115768,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_ECOMM_SF": "250"
+      }
+    },
+    "ecomm_q9": {
+      "N": 25440,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_ECOMM_SF": "250"
+      }
+    },
+    "ecomm_q13": {
+      "N": 3992,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_ECOMM_SF": "250"
+      }
+    },
+    "cars_q3": {
+      "N": 10070,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_CARS_SF": "157376"
+      }
+    },
+    "cars_q4": {
+      "N": 157269,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_CARS_SF": "157376"
+      }
+    },
+    "cars_q8": {
+      "N": 30130,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_CARS_SF": "157376"
+      }
+    },
+    "animals_q1": {
+      "N": 1600,
+      "metric": "sembench_aggregate_query_f1; retain count error and predicted count separately",
+      "environment": {}
+    },
+    "match113": {
+      "N": 266,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {}
+    },
+    "match121": {
+      "N": 1426,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {}
+    },
+    "match202": {
+      "N": 384,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {}
+    },
+    "match305": {
+      "N": 1421,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {}
+    },
+    "ecomm_q6": {
+      "N": 9280,
+      "metric": "sembench_query_scorer_f1_against_human_GT",
+      "environment": {
+        "LASO_ECOMM_SF": "4000"
+      }
+    },
+    "movie_q5": {
+      "N": 65024,
+      "metric": "sembench_semantic_set_f1_against_human_GT",
+      "environment": {}
+    }
+  },
+  "experiments": {
+    "main": {
+      "labels": [
+        "fig:sys-f1",
+        "fig:sys-latency"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE",
+        "AIQA",
+        "CSV",
+        "LOTUS",
+        "BARGAIN-A",
+        "ScaleDoc",
+        "no_proxy"
+      ],
+      "seeds": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "repeat_status": "Five main-quality runs prescribed; seeds 0..4 are artifact choices",
+      "points": [
+        {
+          "budget_pct": 10,
+          "alpha": 0.5,
+          "target": 0.9
+        }
+      ],
+      "executors": {
+        "PROBE": "run.py",
+        "AIQA": null,
+        "CSV": null,
+        "LOTUS": null,
+        "BARGAIN-A": "run.py",
+        "ScaleDoc": null,
+        "no_proxy": "run.py"
+      },
+      "command": "python experiments/reproduce.py --experiment main --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "CSV, LOTUS, ScaleDoc adapters require a current-protocol integration audit; AIQA representation is unspecified by active body.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/main.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "sweep": {
+      "labels": [
+        "fig:sys-tradeoff",
+        "tab:main-comparison"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE",
+        "AIQA",
+        "CSV",
+        "LOTUS",
+        "BARGAIN-A",
+        "ScaleDoc",
+        "no_proxy"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 5,
+          "alpha": 0.5,
+          "target": 0.1
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.5,
+          "target": 0.3
+        },
+        {
+          "budget_pct": 15,
+          "alpha": 0.5,
+          "target": 0.5
+        },
+        {
+          "budget_pct": 20,
+          "alpha": 0.5,
+          "target": 0.7
+        },
+        {
+          "budget_pct": 25,
+          "alpha": 0.5,
+          "target": 0.9
+        }
+      ],
+      "executors": {
+        "PROBE": "run.py",
+        "AIQA": null,
+        "CSV": null,
+        "LOTUS": null,
+        "BARGAIN-A": "run.py",
+        "ScaleDoc": null,
+        "no_proxy": "run.py"
+      },
+      "command": "python experiments/reproduce.py --experiment sweep --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Best-point selection requires complete same-universe sweeps and model-matched no-proxy.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/sweep.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "sampling": {
+      "labels": [
+        "fig:ablation/sampling"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10,
+          "sampler": "activeSampling",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 10,
+          "sampler": "random",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 10,
+          "sampler": "stratified",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 10,
+          "sampler": "top_k",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        }
+      ],
+      "executors": {
+        "PROBE": null
+      },
+      "command": "python experiments/reproduce.py --experiment sampling --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Sampler ablation must use B_L, not full B; verify the Neyman-stratified branch is LR-only.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/sampling.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "refinement": {
+      "labels": [
+        "fig:ablation/refinement"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10,
+          "stage": "LR"
+        },
+        {
+          "budget_pct": 10,
+          "stage": "bias"
+        },
+        {
+          "budget_pct": 10,
+          "stage": "full"
+        }
+      ],
+      "executors": {
+        "PROBE": null
+      },
+      "command": "python experiments/reproduce.py --experiment refinement --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Frozen-L execution required; separate jobs cannot claim identical oracle labels.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/refinement.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "calibration": {
+      "labels": [
+        "fig:alpha-tradeoff"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE",
+        "BARGAIN-A",
+        "BARGAIN-P",
+        "BARGAIN-R"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10,
+          "alpha": 0,
+          "calibrator": "platt",
+          "target": 0
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.1,
+          "calibrator": "platt",
+          "target": 0.1
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.3,
+          "calibrator": "platt",
+          "target": 0.3
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.5,
+          "calibrator": "platt",
+          "target": 0.5
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.7,
+          "calibrator": "platt",
+          "target": 0.7
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.9,
+          "calibrator": "platt",
+          "target": 0.9
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 1,
+          "calibrator": "platt",
+          "target": 1
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0,
+          "calibrator": "gam",
+          "target": 0
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.1,
+          "calibrator": "gam",
+          "target": 0.1
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.3,
+          "calibrator": "gam",
+          "target": 0.3
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.5,
+          "calibrator": "gam",
+          "target": 0.5
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.7,
+          "calibrator": "gam",
+          "target": 0.7
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.9,
+          "calibrator": "gam",
+          "target": 0.9
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 1,
+          "calibrator": "gam",
+          "target": 1
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0,
+          "calibrator": "none",
+          "target": 0
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.1,
+          "calibrator": "none",
+          "target": 0.1
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.3,
+          "calibrator": "none",
+          "target": 0.3
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.5,
+          "calibrator": "none",
+          "target": 0.5
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.7,
+          "calibrator": "none",
+          "target": 0.7
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 0.9,
+          "calibrator": "none",
+          "target": 0.9
+        },
+        {
+          "budget_pct": 10,
+          "alpha": 1,
+          "calibrator": "none",
+          "target": 1
+        }
+      ],
+      "executors": {
+        "PROBE": "run.py",
+        "BARGAIN-A": "run.py",
+        "BARGAIN-P": "run.py",
+        "BARGAIN-R": "run.py"
+      },
+      "command": "python experiments/reproduce.py --experiment calibration --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Workbook Fig9_Alpha uses 13 queries, mixed seed 0/1 and edited cells; not raw evidence. BARGAIN uses a separate target grid .1/.3/.5/.7/.9.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/calibration.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "representation": {
+      "labels": [
+        "fig:repr-models"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10,
+          "representation": "Qwen3-VL-Reranker-2B"
+        },
+        {
+          "budget_pct": 10,
+          "representation": "jina-reranker-m0"
+        },
+        {
+          "budget_pct": 10,
+          "representation": "SigLIP"
+        },
+        {
+          "budget_pct": 10,
+          "representation": "CLIP-base"
+        }
+      ],
+      "executors": {
+        "PROBE": null
+      },
+      "command": "python experiments/reproduce.py --experiment representation --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Both axis and features must change; baseline paper comparison adapters not yet audited.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/representation.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "experts": {
+      "labels": [
+        "fig:mllm-generalization"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE",
+        "no_proxy"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10,
+          "expert": "Qwen3-VL-30B-A3B-Instruct"
+        },
+        {
+          "budget_pct": 10,
+          "expert": "Qwen3.8-27B"
+        },
+        {
+          "budget_pct": 10,
+          "expert": "Gemma4-26B-A4B"
+        },
+        {
+          "budget_pct": 10,
+          "expert": "GLM-4.6V-Flash"
+        }
+      ],
+      "executors": {
+        "PROBE": null,
+        "no_proxy": null
+      },
+      "command": "python experiments/reproduce.py --experiment experts --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Supply immutable revisions and a separate model-matched endpoint per expert; runner never switches a live server.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/experts.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "timing": {
+      "labels": [
+        "fig:time-stack"
+      ],
+      "queries": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ],
+      "systems": [
+        "PROBE"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10
+        }
+      ],
+      "executors": {
+        "PROBE": null
+      },
+      "command": "python experiments/reproduce.py --experiment timing --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Seven-stage non-overlap and measured source coverage need reconciliation; current legacy four-phase report cannot certify this figure.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/timing.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "low_selectivity": {
+      "labels": [
+        "tab:lowsel-results"
+      ],
+      "queries": [
+        "cars_q4",
+        "ecomm_q6",
+        "movie_q5"
+      ],
+      "systems": [
+        "PROBE",
+        "BARGAIN-A",
+        "ScaleDoc",
+        "no_proxy"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10,
+          "alpha": 0.5,
+          "target": 0.9
+        },
+        {
+          "budget_pct": 25,
+          "alpha": 0.5,
+          "target": 0.9
+        }
+      ],
+      "executors": {
+        "PROBE": "run.py",
+        "BARGAIN-A": "run.py",
+        "ScaleDoc": null,
+        "no_proxy": "run.py"
+      },
+      "command": "python experiments/reproduce.py --experiment low_selectivity --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": null,
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/low_selectivity.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    },
+    "trace": {
+      "labels": [
+        "fig:encoder-rank",
+        "fig:sas-multi-process"
+      ],
+      "queries": [
+        "ecomm_q9"
+      ],
+      "systems": [
+        "PROBE"
+      ],
+      "seeds": [
+        0
+      ],
+      "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
+      "points": [
+        {
+          "budget_pct": 10,
+          "trace_batch_size": 300
+        }
+      ],
+      "executors": {
+        "PROBE": null
+      },
+      "command": "python experiments/reproduce.py --experiment trace --dry-run",
+      "raw_runs": [],
+      "state": "missing_current_protocol_evidence",
+      "gap": "Figure-only batch300; do not substitute for batch32 experiments.",
+      "aggregate": "experiments/report.py",
+      "plot": "experiments/report.py",
+      "outputs": [
+        "results/figures/trace.pdf"
+      ],
+      "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
+      "timing": "measure end-to-end; no N/delegation scaling",
+      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+    }
+  },
+  "baseline_protocols": {
+    "AIQA": "UQE active sampling with its established proxy; sampling B%",
+    "CSV": "cluster counts 4/2; 10% per-cluster sample; 90% consensus",
+    "LOTUS": "Qwen3-VL-2B token logprob proxy; precision/recall target .9, delta .1; sampling10%",
+    "BARGAIN": "same refined PROBE proxy; accuracy .9, delta .1; main accuracy mode A",
+    "ScaleDoc": "frozen embeddings; contrastive MLP; training5%, calibration5%, targetF1 .9",
+    "no_proxy": "same expert, prompts and entire candidate universe"
+  },
+  "claims": {
+    "default_probe_f1_geomean": {
+      "paper_value": 0.762,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_no_proxy_f1_geomean": {
+      "paper_value": 0.797,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_probe_delegation_geomean": {
+      "paper_value": 0.128,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_probe_speedup_geomean": {
+      "paper_value": 4.88,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_scaledoc_f1_geomean": {
+      "paper_value": 0.53,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_bargain_f1_geomean": {
+      "paper_value": 0.628,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_lotus_f1_geomean": {
+      "paper_value": 0.484,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_scaledoc_delegation_median": {
+      "paper_value": 0.81,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_bargain_delegation_median": {
+      "paper_value": 0.21,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "default_lotus_delegation_median": {
+      "paper_value": 0.8,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "cost_first_latency_geomean_seconds": {
+      "paper_value": 44.0,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    },
+    "cost_first_speedup_geomean": {
+      "paper_value": 4.9,
+      "status": "unverified_raw_evidence",
+      "query_coverage": [
+        "mmqa_q2a",
+        "mmqa_q7",
+        "ecomm_q7",
+        "ecomm_q8",
+        "ecomm_q9",
+        "ecomm_q13",
+        "cars_q3",
+        "cars_q4",
+        "cars_q8",
+        "animals_q1",
+        "match113",
+        "match121",
+        "match202",
+        "match305"
+      ]
+    }
+  },
+  "appendix": {
+    "enabled": false,
+    "status": "historical_protocol_only"
+  },
+  "raw_evidence_policy": "No workbook cells, simulated latency, mixed seeds or old-protocol runs admitted as current-paper raw evidence."
+}

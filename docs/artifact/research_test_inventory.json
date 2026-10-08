@@ -1,0 +1,21 @@
+{
+  "excluded_from_release": [
+    "tests/test_bargain_shared_budget.py",
+    "tests/test_no_proxy_mode.py",
+    "tests/test_baseline_join_features.py",
+    "tests/test_rare_baseline_features.py",
+    "tests/test_oracle_prompt_parse.py",
+    "tests/test_real_sensitivity_reporting.py",
+    "tests/test_fixed_ce_queue_wait.py",
+    "tests/test_gam_calibrator.py",
+    "tests/test_comparison_metrics.py",
+    "tests/test_preparation_budget.py",
+    "tests/test_adapter_timing_report.py",
+    "tests/test_scaledoc_calibration_adapter.py",
+    "tests/test_stats_report.py",
+    "tests/test_single_seed_queue.py",
+    "tests/test_adapter_cli_contract.py",
+    "tests/test_calib_ablation_analyze.py"
+  ],
+  "reason": "Research adapters not yet audited for the current paper; originals remain in the research checkout."
+}

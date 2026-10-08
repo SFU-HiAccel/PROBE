@@ -11,6 +11,7 @@ has no dependency on cluster_proxy / proxy_model and is testable offline.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -21,7 +22,7 @@ from sklearn.model_selection import StratifiedKFold
 from budgeted_calibrated_router import apply_verified_labels, expected_counts, plan_dual_threshold
 from router_cap import MIN_TOTAL_BUDGET
 from stratified_calibration import StratifiedDesign
-from weighted_calibrator import calibrate, predict_proba
+from weighted_calibrator import CalibrationFit, PlattParams, calibrate, predict_proba
 
 __all__ = [
     "LEARNED_CALIBRATION_MODE",
@@ -35,20 +36,30 @@ __all__ = [
 ]
 
 LEARNED_CALIBRATION_MODE = "learned_calibration"
+CALIBRATORS = ("platt", "gam", "gam_univariate", "none")
+# What the calibrator reads as its score input: the LR proxy logit u (paper Sec. 5) or the logit of the
+# graph-refined score z_smooth (the output of bias diffusion + homogeneity propagation).
+CALIB_INPUTS = ("proxy", "refined")
+REFINED_EPS = 1e-6   # z_smooth is pinned to exactly 0/1 on L; clip before the logit
+# Identity map in log-odds: predict_proba(IDENTITY, x, h) == sigmoid(x).
+IDENTITY_PARAMS = PlattParams(a=1.0, b=0.0, c=0.0, delta=0.0, t=0.0)
 
 # profiling keys copied into run.py result rows (only for this mode)
 LEARNED_CALIBRATION_RESULT_KEYS = (
     "lc_status", "lc_reason", "lc_total_budget", "lc_sample_budget", "lc_calib_budget",
     "lc_calls_L", "lc_calls_A", "lc_calls_D", "lc_calls_total", "lc_budget_overrun",
     "lc_n_strata", "lc_A_pos", "lc_L_pos", "lc_ess_pos", "lc_max_pos_weight_share",
-    "lc_lambda_used", "lc_oof_reason", "lc_a", "lc_b", "lc_c", "lc_delta", "lc_t", "lc_b_final",
+    "lc_lambda_used", "lc_oof_reason", "lc_n_folds_used", "lc_a", "lc_b", "lc_c", "lc_delta", "lc_t", "lc_b_final",
     "lc_intercept_residual", "lc_k_plus", "lc_k_minus", "lc_tau_plus", "lc_tau_minus",
     "lc_planned_f1", "lc_estimated_f1", "lc_D_pos", "lc_time_s", "lc_fallback_rounds",
     "lc_route_budget", "lc_fallback_budget", "lc_fallback_used",
     "lc_cp_used", "lc_cp_target_pos", "lc_cp_measured_pos", "lc_cp_upper_pos", "lc_cp_strata",
     "lc_alpha", "lc_plan_calls", "lc_alloc",
+    "lc_time_sample_s", "lc_time_fit_s", "lc_time_route_s",
     "lc_calibrator", "lc_route_objective", "lc_route_cost_exp", "lc_f_gain", "lc_f_curve",
     "lc_gam_se_median", "lc_gam_monotone", "lc_gam_n_knots", "lc_gam_ridge",
+    "lc_upper_missed", "lc_upper_pool", "lc_bound_confidence", "lc_bound_scope",
+    "lc_calibration_design", "lc_calib_input", "lc_h_pool_values", "lc_h_a_values", "lc_h_l_values", "lc_audit_path", "lc_audit_n", "lc_audit_time_s",
 )
 
 # refine_fn(train_idx, train_y) -> (refined_label_mask[N], lr_logit[N] or None)
@@ -60,6 +71,7 @@ LabelRowsFn = Callable[[np.ndarray], np.ndarray]
 @dataclass(frozen=True)
 class LearnedCalibrationConfig:
     total_budget: int
+    budget_scope: str = "all"  # preparation: L+A only; router may use all remaining IDs
     sample_frac: float = 0.5
     calib_frac: float = 0.4
     route_frac: float = 0.1
@@ -78,7 +90,10 @@ class LearnedCalibrationConfig:
     cp_lam: float = 0.0          # >0: mix a Clopper-Pearson upper bound in when A has no positive
     cp_alpha: float = 0.05       # failure probability of that bound, split across strata
     # --- calibrator arm: "platt" (a line in log-odds) or GAMCAL's spline (arXiv:2604.00660) ---
-    calibrator: str = "platt"    # "platt" | "gam" | "gam_univariate" (the last drops h and 1[L])
+    # "none" is the w/o-calibration ablation: A is still drawn (same calls), but routing uses the raw
+    # proxy probability sigmoid(x) as p instead of a fitted calibrator.
+    calibrator: str = "platt"    # "platt" | "gam" | "gam_univariate" (the last drops h and 1[L]) | "none"
+    calib_input: str = "proxy"   # "proxy": LR logit u; "refined": logit of the graph-refined score (x_cal)
     gam_ridge: float = 1.0       # GAMCAL's smoothing lambda; the paper takes it as a fixed input
     gam_knots: int = 8           # knot count -- unspecified by the paper, so ours to declare
     gam_stochastic: bool = False # route on Eq. 26's g~(s,q) instead of the posterior mean
@@ -86,10 +101,25 @@ class LearnedCalibrationConfig:
     route_objective: str = "pool"   # "pool" | "budget" | "normalized" | "gamcal"
     route_cost_exp: float = 1.0     # gamma on the cost term; >1 turns alpha from a switch into a dial
     seed: int = 42
+    fixed_calibration: bool = False  # legacy callers opt in; fixed-CE production enforces True
+    protocol: str = "legacy"  # paper entry points select the current manuscript explicitly
+    certificate_delta: float = .05
 
     def __post_init__(self) -> None:
-        if self.total_budget < 1:
-            raise ValueError(f"total_budget must be >= 1, got {self.total_budget}")
+        if self.protocol not in ("paper", "legacy"):
+            raise ValueError("protocol must be paper or legacy")
+        if self.calib_input not in CALIB_INPUTS:
+            raise ValueError(f"calib_input must be one of {CALIB_INPUTS}, got {self.calib_input!r}")
+        if self.calibrator not in CALIBRATORS:
+            raise ValueError(f"calibrator must be one of {CALIBRATORS}, got {self.calibrator!r}")
+        if self.budget_scope not in ("all", "preparation"):
+            raise ValueError("budget_scope must be all or preparation")
+        if self.budget_scope == "preparation" and (not self.route_unlimited or self.route_budget_mult > 0):
+            raise ValueError("preparation scope requires unlimited routing without a multiplier")
+        if self.total_budget < 0:
+            raise ValueError(f"total_budget must be >= 0, got {self.total_budget}")
+        if not 0 < self.certificate_delta < 1:
+            raise ValueError("certificate_delta must be in (0,1)")
         if not 0.0 < self.sample_frac <= 1.0:
             raise ValueError(f"sample_frac must be in (0, 1], got {self.sample_frac}")
         if not 0.0 <= self.calib_frac <= 1.0 or self.sample_frac + self.calib_frac > 1.0:
@@ -105,10 +135,14 @@ class LearnedCalibrationConfig:
 
     @property
     def sample_budget(self) -> int:
-        return max(1, int(self.sample_frac * self.total_budget))
+        if self.protocol == "paper":
+            return (4 * self.total_budget) // 5
+        return min(self.total_budget, max(1, int(self.sample_frac * self.total_budget)))
 
     @property
     def calib_budget(self) -> int:
+        if self.protocol == "paper":
+            return self.total_budget - self.sample_budget
         return int(self.calib_frac * self.total_budget)
 
     @property
@@ -128,6 +162,7 @@ class OofFeatures:
     x: Optional[np.ndarray]  # out-of-fold logits aligned with labeled_indices
     h: Optional[np.ndarray]  # out-of-fold refined labels (0.0 / 1.0)
     reason: str              # "" when available
+    n_folds_used: int = 0    # folds actually run: min(R, rarer class of L); 0 when unavailable
 
 
 @dataclass(frozen=True)
@@ -137,11 +172,30 @@ class LearnedCalibrationResult:
     verify_idx: np.ndarray   # rows in D (LLM-labelled by routing or exploration)
     status: str              # "routed" | "insufficient_evidence"
     diagnostics: Dict[str, Any]
+    params: Any = None       # fitted calibrator (PlattParams / GamParams), None when not routed
+
+
+def refined_logit(z: np.ndarray) -> np.ndarray:
+    """Logit of a graph-refined score in [0, 1], clipped so rows pinned to 0/1 stay finite."""
+    z = np.clip(np.asarray(z, dtype=np.float64), REFINED_EPS, 1.0 - REFINED_EPS)
+    return np.log(z / (1.0 - z))
 
 
 def learned_calibration_total_budget(n_items: int, budget_pct: float) -> int:
-    """Total LLM-call budget B, with the same floor run.py uses today."""
-    return max(MIN_TOTAL_BUDGET, int(n_items * budget_pct / 100))
+    """Preparation labels B = floor(N * budget_pct / 100), including tiny queries."""
+    if n_items < 0 or not np.isfinite(budget_pct) or not 0 <= budget_pct <= 100:
+        raise ValueError("invalid candidate count or percentage")
+    return int(n_items * budget_pct / 100)
+
+
+def paper_calibration_config(total_budget: int, **overrides) -> LearnedCalibrationConfig:
+    """Current paper protocol; historical configurations remain explicitly constructible."""
+    settings = dict(total_budget=total_budget, protocol="paper", budget_scope="preparation",
+                    sample_frac=.8, calib_frac=.2, route_frac=0., route_unlimited=True,
+                    fixed_calibration=True, calib_input="refined", alpha=.5, cp_lam=.15,
+                    rho_a=0., rho_b=0., rho_c=0., rho_delta=1., seed=0)
+    settings.update(overrides)
+    return LearnedCalibrationConfig(**settings)
 
 
 def compute_oof_features(
@@ -159,22 +213,26 @@ def compute_oof_features(
     k = min(int(n_folds), int(counts.min()))
     if k < 2:
         return OofFeatures(None, None, "too_few_labels_per_class")
+    # A class rarer than R caps the folds; report the value that ran, not the one requested.
     x_oof = np.zeros(idx.size, dtype=np.float64)
     h_oof = np.zeros(idx.size, dtype=np.float64)
     splitter = StratifiedKFold(n_splits=k, shuffle=True, random_state=int(seed))
     for train_pos, hold_pos in splitter.split(idx, y):
         mask, logit = refine_fn(idx[train_pos], y[train_pos])
         if logit is None:
-            return OofFeatures(None, None, "fold_logit_unavailable")
+            return OofFeatures(None, None, "fold_logit_unavailable", k)
         x_oof[hold_pos] = np.asarray(logit, dtype=np.float64)[idx[hold_pos]]
         h_oof[hold_pos] = np.asarray(mask, dtype=bool)[idx[hold_pos]].astype(np.float64)
-    return OofFeatures(x_oof, h_oof, "")
+    return OofFeatures(x_oof, h_oof, "", k)
 
 
-def _label(label_rows: LabelRowsFn, rows: np.ndarray) -> np.ndarray:
+def _label(label_rows: LabelRowsFn, rows: np.ndarray, stage="A") -> np.ndarray:
     if rows.size == 0:
         return np.zeros(0, dtype=np.int32)
-    labels = np.asarray(label_rows(rows), dtype=np.int32).reshape(-1)
+    from oracle_budget import binary_labels_or_raise
+    callback = getattr(label_rows, "for_stage", None)
+    values = callback(rows, stage) if callback is not None else label_rows(rows)
+    labels = binary_labels_or_raise(values).reshape(-1)
     if labels.size != rows.size:
         raise ValueError(f"label_rows returned {labels.size} labels for {rows.size} rows")
     return labels
@@ -189,8 +247,14 @@ def run_learned_calibration(
     oof: OofFeatures,
     label_rows: LabelRowsFn,
     config: LearnedCalibrationConfig,
+    x_cal: Optional[np.ndarray] = None,
 ) -> LearnedCalibrationResult:
-    """Stages 2-5: sample A, calibrate on A+L, choose dual thresholds, verify D."""
+    """Stages 2-5: sample A, calibrate on A+L, choose dual thresholds, verify D.
+
+    ``x`` (the LR proxy logit) always drives the stratified design of A. The calibrator reads ``x_cal``
+    when given (e.g. the logit of the graph-refined score, calib_input="refined") and ``x`` otherwise;
+    ``oof.x`` must be on the same scale as the calibrator input.
+    """
     h = np.asarray(h, dtype=np.float64).reshape(-1)
     n = h.size
     l_idx = np.asarray(labeled_indices, dtype=np.int64).reshape(-1)
@@ -209,6 +273,7 @@ def run_learned_calibration(
         "lc_calls_L": int(l_idx.size),
         "lc_L_pos": int(l_y.sum()),
         "lc_oof_reason": oof.reason,
+        "lc_n_folds_used": int(oof.n_folds_used),
     }
 
     # Stages 2-3: stratified calibration sample A on the frozen proxy score s. The first draw is
@@ -220,7 +285,9 @@ def run_learned_calibration(
     reason = "proxy_logit_unavailable" if x is None else "empty_calibration_sample"
     if x is not None:
         x = np.asarray(x, dtype=np.float64).reshape(-1)
-        s = expit(x)
+        s = expit(x_cal) if config.protocol == "paper" and x_cal is not None else expit(x)
+    # calibrator input: fit, predicted probabilities and the routing order all use xc
+    xc = x if x_cal is None or x is None else np.asarray(x_cal, dtype=np.float64).reshape(-1)
     use_l = oof.x is not None
     design = None
     draws = 0
@@ -228,35 +295,45 @@ def run_learned_calibration(
     # the behaviour the 5-seed study had, and makes the fallback's real appetite visible.
     fallback_left = max(0, remaining - config.calib_budget) if config.fallback_unlimited \
         else max(0, min(config.route_budget, remaining - config.calib_budget))
+    if config.fixed_calibration:
+        fallback_left = 0  # one fixed A draw, irrespective of its observed labels
     diag["lc_fallback_budget"] = int(fallback_left)
+    t_sample = t_fit = t_route = 0.0
     m = max(0, min(config.calib_budget, pool.size, remaining))
     if m > 0:
         # Without a proxy logit there is nothing to stratify on: one stratum (uniform rounds).
         scores = s if x is not None else np.zeros(n, dtype=np.float64)
-        design = StratifiedDesign.build(pool, scores, n_bins=config.n_bins, max_strata=m,
+        max_strata = min(m, max(1, int(np.ceil(.2 * m)))) if config.protocol == "paper" else m
+        design = StratifiedDesign.build(pool, scores, n_bins=config.n_bins, max_strata=max_strata,
                                         neyman=config.neyman and x is not None)
     while design is not None and m > 0:
         design, new_rows = design.draw(m, rng)
+        _t0 = time.perf_counter()
         new_y = _label(label_rows, new_rows)
+        t_sample += time.perf_counter() - _t0
         draws += 1
         remaining -= new_rows.size
         verified[new_rows] = True
         y_known[new_rows] = new_y
         if x is not None:
+            _t0 = time.perf_counter()
             sample = design.sample()
             common = dict(
-                x_a=x[sample.indices], h_a=h[sample.indices], y_a=y_known[sample.indices],
+                x_a=xc[sample.indices], h_a=h[sample.indices], y_a=y_known[sample.indices],
                 w_a=sample.weights,
                 x_l=oof.x if use_l else None, h_l=oof.h if use_l else None, y_l=l_y if use_l else None,
                 h_pool=h[pool], lam=config.lam, cp_lam=config.cp_lam, cp_alpha=config.cp_alpha,
             )
-            if str(config.calibrator).startswith("gam"):
+            if config.calibrator == "none":
+                fit = CalibrationFit(IDENTITY_PARAMS, "ok", "uncalibrated", {})
+            elif str(config.calibrator).startswith("gam"):
                 from gam_calibrator import calibrate_gam
                 fit = calibrate_gam(**common, ridge=config.gam_ridge, n_knots=config.gam_knots,
                                     univariate=config.calibrator == "gam_univariate")
             else:
-                fit = calibrate(**common, rho=config.rho)
+                fit = calibrate(**common, rho=config.rho, paper=config.protocol == "paper")
             reason = fit.reason
+            t_fit += time.perf_counter() - _t0
             if fit.status != "insufficient_evidence":
                 break  # "ok" -> route; "solver_failed" -> stop retrying
         # Fallback rounds are paid for by the routing share, not by whatever budget is left.
@@ -272,7 +349,8 @@ def run_learned_calibration(
         diag["lc_alloc"] = "neyman" if (design is not None and design.p_hat is not None) else "equal"
         diag["lc_A_pos"] = int(y_known[a_idx].sum())
     if fit is not None:
-        for key in ("cp_used", "cp_target_pos", "cp_measured_pos", "cp_upper_pos", "cp_strata"):
+        for key in ("cp_used", "cp_target_pos", "cp_measured_pos", "cp_upper_pos", "cp_strata",
+                    "h_pool_values", "h_a_values", "h_l_values"):
             if key in fit.diagnostics:
                 diag[f"lc_{key}"] = fit.diagnostics[key]
         diag["lc_ess_pos"] = fit.diagnostics.get("ess_pos")
@@ -292,6 +370,8 @@ def run_learned_calibration(
         budget_left = max(0, remaining)
     else:
         budget_left = max(0, min(remaining, config.route_budget - diag["lc_fallback_used"]))
+    if config.fixed_calibration and config.budget_scope == "all":
+        budget_left = min(budget_left, max(0, remaining))
     diag["lc_route_budget"] = int(budget_left)
     if fit is not None and fit.status == "ok":
         # Stages 4-5: dual thresholds on calibrated probabilities, one allocation
@@ -301,15 +381,15 @@ def run_learned_calibration(
                 # Eq. 26: q is drawn once per row and frozen, so routing stays consistent across
                 # refits (paper §5.3). Rows in poorly calibrated regions get more dispersed scores.
                 q = np.random.default_rng(int(config.seed) + 1).random(n)
-                p = params.predict_stochastic(x[unverified], h[unverified], q[unverified])
+                p = params.predict_stochastic(xc[unverified], h[unverified], q[unverified])
             else:
-                p = params.predict(x[unverified], h[unverified])
+                p = params.predict(xc[unverified], h[unverified])
         else:
-            p = predict_proba(params, x[unverified], h[unverified])
+            p = predict_proba(params, xc[unverified], h[unverified])
         counts = expected_counts(p, h[unverified], n_verified_pos=int(y_known[verified].sum()))
         # Order by the raw logit: p is monotone in x within each h group, and x does
         # not saturate the way sigmoid(x) does for |x| > ~37.
-        plan = plan_dual_threshold(unverified, p, x[unverified], h[unverified], counts, budget_left,
+        plan = plan_dual_threshold(unverified, p, xc[unverified], h[unverified], counts, budget_left,
                                    alpha=config.alpha, n_pool=n,
                                    objective=config.route_objective, cost_exp=config.route_cost_exp)
         d_idx = plan.verify_idx
@@ -346,8 +426,11 @@ def run_learned_calibration(
         status = "insufficient_evidence"
         plan = None
 
-    d_y = _label(label_rows, d_idx)
-    final_pos = h > 0.5
+    _t0 = time.perf_counter()
+    d_y = _label(label_rows, d_idx, "D")
+    t_route = time.perf_counter() - _t0
+    final_pos = (np.zeros(n, dtype=bool) if config.protocol == "legacy" and
+                 config.fixed_calibration and plan is None else h > 0.5)
     final_pos[verified] = y_known[verified] == 1
     final_pos[d_idx] = d_y == 1
 
@@ -358,6 +441,17 @@ def run_learned_calibration(
     else:
         diag["lc_estimated_f1"] = float("nan")
 
+    if config.fixed_calibration:
+        from calibration_bounds import missed_positive_bound
+        upper_missed, upper_pool = missed_positive_bound(
+            pool, design, y_known, d_idx, d_y, final_pos, config.certificate_delta)
+        diag.update(lc_upper_missed=upper_missed, lc_upper_pool=upper_pool,
+                    lc_bound_confidence=1-config.certificate_delta,
+                    lc_bound_scope="stationary_oracle_labels_fixed_A_design",
+                    lc_calibration_design="fixed_single_draw")
+    else:
+        diag["lc_bound_scope"] = "no_fixed_time_certificate_for_legacy_adaptive_stopping"
+
     calls_total = int(l_idx.size + a_idx.size + d_idx.size)
     diag.update({
         "lc_status": status,
@@ -365,6 +459,13 @@ def run_learned_calibration(
         "lc_calls_D": int(d_idx.size),
         "lc_D_pos": int(d_y.sum()),
         "lc_calls_total": calls_total,
-        "lc_budget_overrun": max(0, calls_total - int(config.total_budget)),
+        # Stage timers for the latency breakdown: labelling A, fitting the calibrator, labelling D.
+        "lc_time_sample_s": t_sample,
+        "lc_time_fit_s": t_fit,
+        "lc_time_route_s": t_route,
+        "lc_budget_scope": config.budget_scope,
+        "lc_calib_input": config.calib_input,
+        "lc_budget_overrun": max(0, (int(l_idx.size+a_idx.size) if config.budget_scope == "preparation" else calls_total) - int(config.total_budget)),
     })
-    return LearnedCalibrationResult(final_pos, a_idx, d_idx, status, diag)
+    return LearnedCalibrationResult(final_pos, a_idx, d_idx, status, diag,
+                                    fit.params if plan is not None else None)

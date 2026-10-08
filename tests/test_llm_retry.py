@@ -115,7 +115,8 @@ def _run_batch(client, texts):
         max_tokens=16, temperature=0.0, semaphore=asyncio.Semaphore(4)))
 
 
-def test_batched_completions_retries_transient_exception(caplog):
+def test_batched_completions_retries_transient_exception(caplog, monkeypatch):
+    monkeypatch.setattr(pm, "_format_chat_prompt", lambda system, user, model: user)
     client = _FakeClient([ConnectionError(), _ok_batch(["True", "False", "True"])])
     with caplog.at_level(logging.WARNING):
         labels = _run_batch(client, ["a", "b", "c"])
@@ -124,7 +125,8 @@ def test_batched_completions_retries_transient_exception(caplog):
     assert "defaulting to 0" not in caplog.text
 
 
-def test_batched_completions_persistent_failure_is_logged(caplog):
+def test_batched_completions_persistent_failure_is_logged(caplog, monkeypatch):
+    monkeypatch.setattr(pm, "_format_chat_prompt", lambda system, user, model: user)
     client = _FakeClient([_FakeResponse(502, text="bad gateway")] * pm.LLM_MAX_ATTEMPTS)
     with caplog.at_level(logging.WARNING):
         labels = _run_batch(client, ["a", "b"])

@@ -1,0 +1,15 @@
+{
+  "upstream": "SemBench/SemBench",
+  "license_source_revision": "8c2cac89b21c6782239e8e5b03d326d0c029b655",
+  "vendored_source_revision": "not recorded by original vendor commit; do not infer from the license snapshot",
+  "files": {
+    "LICENSE-MIT": {
+      "sha256": "72ae6e7bf580ec33ce79f57c2ef693e56bcf08e1f75145b338969fc28ed78972",
+      "source": "https://raw.githubusercontent.com/SemBench/SemBench/8c2cac89b21c6782239e8e5b03d326d0c029b655/LICENSE-MIT"
+    },
+    "LICENSE-APACHE": {
+      "sha256": "a1f9013c5e23afde17e85b979b9eca23a6eeef6209412bda29ccf1da59c74fa0",
+      "source": "https://raw.githubusercontent.com/SemBench/SemBench/8c2cac89b21c6782239e8e5b03d326d0c029b655/LICENSE-APACHE"
+    }
+  }
+}

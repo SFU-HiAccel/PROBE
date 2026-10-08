@@ -51,6 +51,7 @@ from weighted_calibrator import (
     stable_bce,
     stratified_positive_target,
     _evidence_problem,
+    _l_enters_fit,
 )
 
 __all__ = ["GamParams", "calibrate_gam", "DEFAULT_N_KNOTS", "DEFAULT_LOGIT_CLIP"]
@@ -155,7 +156,7 @@ def calibrate_gam(
                                    "gam_ridge": float(ridge), "gam_univariate": bool(univariate),
                                    **positive_weight_diagnostics(y_a, w_a)}
 
-    problem = _evidence_problem(y_a, h_a, h_pool)
+    problem = _evidence_problem(y_a, h_a, h_pool, h_l if _l_enters_fit(x_l, h_l, y_l, lam) else None)
     conservative = (problem == "single_class_in_A" and cp_lam > 0.0 and float(y_a.sum()) == 0.0
                     and x_l is not None and y_l is not None and np.asarray(y_l).sum() > 0)
     if problem and not conservative:

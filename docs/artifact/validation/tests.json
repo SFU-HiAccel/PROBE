@@ -1,0 +1,7 @@
+{
+  "observed_at_utc": "2026-10-08T21:39:04.228603+00:00",
+  "scope": "351 tests before addition of 3 report tests and final documentation; rerun required for final tree",
+  "result": "351 passed",
+  "command": "JAVA_HOME=<installed Java11> SPARK_LOCAL_IP=127.0.0.1 python -m pytest -q tests --tb=short",
+  "log_sha256": "2e7fb1155aa30f76065bdaf3550b85ff822b08a342686c2b31dadeb6d21d29cd"
+}

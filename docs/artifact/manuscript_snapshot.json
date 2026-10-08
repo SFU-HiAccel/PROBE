@@ -1,7 +1,7 @@
 {
-  "observed_at_utc": "2026-10-08T20:56:28.747353+00:00",
+  "observed_at_utc": "2026-10-08T21:24:43.025969+00:00",
   "source_worktree": "../PROBE-VLDB",
-  "source_head": "815f9fb3b5b60079de7d56608c4a85f26369d643",
+  "source_head": "a48d421c127ffe8d802644fecfd2b966dd494ee0",
   "source_is_dirty": true,
   "authority": "Current worktree bytes, including staged and unstaged edits; HEAD alone does not identify this manuscript.",
   "appendix_status": "sections/09_appendix.tex exists but its input is commented out in main.tex. Audit separately from the active manuscript.",
@@ -39,8 +39,8 @@
       "bytes": 12708
     },
     "sections/06_evaluation.tex": {
-      "sha256": "71a6d972eeee4775ed6b1d4dfbed3c26b5fcf141fe3f9e29398d9f9d65e4cdb2",
-      "bytes": 20850
+      "sha256": "9fa28f26141eeb722908bed9252800ab453b852cb8c1e021b3a32cdd5da43383",
+      "bytes": 20835
     },
     "sections/07_related_work.tex": {
       "sha256": "574209a87564dab052a5c644e62bf2bd128ecc5069bcb67cb01de1d876a92bef",
@@ -59,8 +59,8 @@
       "bytes": 2859
     },
     "tables/best_points.tex": {
-      "sha256": "7e75970c58b96e4013139239001929cf2c51db412622bc7719168a877c782a0e",
-      "bytes": 4954
+      "sha256": "98e56cfd1ebe758e65ef002dc3d52867b39304b011daf7d5a70683a773911513",
+      "bytes": 4972
     },
     "figures/Algo3.pdf": {
       "sha256": "f49ce6878d3677c8ababca5d79bf8000d5874b6cfe7d49dcfc78ec510046840f",
@@ -75,8 +75,8 @@
       "bytes": 189826
     },
     "figures/all_queries.pdf": {
-      "sha256": "1a12cd98dbfe96714884fe7746e0c37195b157e8873f29681c9a4dc8e9337fe5",
-      "bytes": 50789
+      "sha256": "2078e972c3be33ef02847581c565e3a74a2406b2a2d4a84fc09917db93ae8cdc",
+      "bytes": 50807
     },
     "figures/alpha_tradeoff.pdf": {
       "sha256": "1fec91d9373c388ad0a0bbdd8ec4effb7835a51ad1c7daab68c24697f6454a11",
@@ -196,5 +196,10 @@
       "figures/sas_flow.tex",
       "figures/fig_time_breakdown.pdf"
     ]
-  }
+  },
+  "rechecked_changes": [
+    "sections/06_evaluation.tex",
+    "tables/best_points.tex",
+    "figures/all_queries.pdf"
+  ]
 }

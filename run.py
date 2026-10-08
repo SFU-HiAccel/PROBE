@@ -1,12 +1,14 @@
+from fixed_ce_config import runtime_options as _fixed_ce_runtime_options
 import os as _os  # noqa: E402  (anonymized path config)
 DATA_ROOT = _os.environ.get(
     "LASO_DATA_ROOT",
-    _os.environ.get("LLMSQL_DATA_ROOT", _os.path.expanduser("~")),
+    _os.environ.get("LLMSQL_DATA_ROOT", _os.environ.get("PROBE_DATA_ROOT", "data")),
 )
 _os.environ.setdefault("LASO_DATA_ROOT", DATA_ROOT)
 _os.environ.setdefault("LLMSQL_DATA_ROOT", DATA_ROOT)
 
 import contextlib
+import json
 import os
 
 
@@ -41,7 +43,7 @@ from learned_calibration import (
     learned_calibration_total_budget,
 )
 
-MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct")
+MODEL = os.environ.get("SEMBENCH_MODEL", "google/gemma-4-26B-A4B-it")   # default oracle since 2026-09-24 (was Qwen/Qwen3-VL-30B-A3B-Instruct)
 #MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3.6-35B-A3B")
 
 JAR_PATH = os.environ.get(
@@ -161,20 +163,9 @@ def _emb_scope(query_tag: str, emb_model: str):
         import traceback
         traceback.print_exc()
 
-BUDGET_PCTS = [5,10,15,20,25]
+BUDGET_PCTS = [10]
 
-QUERY_BUDGET_PCTS: dict = {
-    "mmqa_q7": [1,2,3,4,5,6,7,8,9,10],
-    "mmqa_q2a": [0.25, 0.5, 0.75, 1, 1.25],
-    "ecomm_q7": [5,10,15,20,25],
-    "ecomm_q8": [5,10,15,20,25],
-    "ecomm_q9": [5,10,15,20,25],
-    "ecomm_q13": [5,10,15,20,25],
-    "cars_q3": [5,10,15,20,25],
-    "cars_q4": [5,10,15,20,25],
-    "cars_q8": [5,10,15,20,25],
-    "animals_q1": [5,10,15,20,25],
-}
+QUERY_BUDGET_PCTS: dict = {}
 
 def get_budget_pcts_for_query(query_tag: str) -> list:
     """Return the budget-percentage list for `query_tag`.
@@ -185,14 +176,13 @@ def get_budget_pcts_for_query(query_tag: str) -> list:
 
 
 KNN_K_VALUES = ["auto"]
-RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "43"))
+RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "0"))
 # Patch R1: fraction of the total LLM budget the router may spend (env: LASO_ROUTER_CAP_FRAC).
 ROUTER_CAP_FRAC = float(os.environ.get("LASO_ROUTER_CAP_FRAC", "0.3"))
-# Learned calibration: the budget B pays for the active sample L (floor(0.8B)) and the stratified
-# calibration sample A (floor(0.2B)). Routing D is NOT part of B and has no cap: the dial alpha alone
-# decides how many unverified rows go to the LLM, so a run issues |L| + |A| + |D| calls with
-# |L| + |A| <= B. The capped accountings (LASO_LC_ROUTE_FRAC > 0 with LASO_LC_ROUTE_UNLIMITED=0, or
-# LASO_LC_ROUTE_BUDGET_MULT > 0) remain only to reproduce earlier results (results/lc_carve, lc_alpha_grid).
+# Fixed-CE production shares one hard oracle budget across learning L, calibration A,
+# and routing D. Default allocation is 50/40/10; retries also consume this budget.
+# Historical uncapped experiments require explicit legacy configuration and are not
+# measurements of this default algorithm.
 LC_SAMPLE_FRAC = float(os.environ.get("LASO_LC_SAMPLE_FRAC", "0.8"))
 LC_CALIB_FRAC = float(os.environ.get("LASO_LC_CALIB_FRAC", "0.2"))
 LC_ROUTE_FRAC = float(os.environ.get("LASO_LC_ROUTE_FRAC", "0.0"))
@@ -208,33 +198,42 @@ LC_BUDGET_SCALE = float(os.environ.get("LASO_LC_BUDGET_SCALE", "1.0"))
 # value that never lost against refusing, and it sits at the Beta posterior median of the bound.
 LC_CP_LAM = float(os.environ.get("LASO_LC_CP_LAM", "0.15"))
 LC_CP_ALPHA = float(os.environ.get("LASO_LC_CP_ALPHA", "0.05"))
-# Cost-quality dial on the routing stage. Routing is uncapped, so alpha = 1 would send every unverified
-# row to the LLM (full LLM execution). 0.5 is the knee of the B = 10% sweep in
-# results/lc_alpha_uncapped_grid (mean delegation 22%, quality within 0.04 of alpha = 1).
+# Cost-quality dial within the remaining routing allowance. The 0.5 default was
+# inherited from historical sweeps; it has not been retuned for the fixed-CE method.
 LC_ALPHA = float(os.environ.get("LASO_LC_ALPHA", "0.5"))
 # Neyman allocation of the calibration sample A (with an inclusion floor); 0 restores the even split.
 LC_NEYMAN = os.environ.get("LASO_LC_NEYMAN", "1").lower() in {"1", "true", "yes", "on"}
 # 1 (default): top-up rounds of A may draw on whatever part of B that L and A left unspent. With no
 # routing share there is nothing else to draw on, so these rounds are rare.
-LC_FALLBACK_UNLIMITED = os.environ.get("LASO_LC_FALLBACK_UNLIMITED", "1").lower() in {"1", "true", "yes", "on"}
+LC_FALLBACK_UNLIMITED = os.environ.get("LASO_LC_FALLBACK_UNLIMITED", "0").lower() in {"1", "true", "yes", "on"}
 # 1 (default): routing has no budget cap; alpha is the only thing deciding how many rows get verified.
 LC_ROUTE_UNLIMITED = os.environ.get("LASO_LC_ROUTE_UNLIMITED", "1").lower() in {"1", "true", "yes", "on"}
+# "all": sampling, calibration and routing share the total budget; "preparation": the budget covers
+# sampling + calibration only and routing is outside it (the paper protocol, with LASO_LC_ROUTE_UNLIMITED=1).
+# With the fixed-CE calibration, "all" caps uncapped routing at what is left of the total budget.
+LC_BUDGET_SCOPE = os.environ.get("LASO_LC_BUDGET_SCOPE", "preparation").strip().lower()
 # >0: routing gets its own budget of this multiple of B, on top of sampling+calibration (D <= mult*B).
 LC_ROUTE_BUDGET_MULT = float(os.environ.get("LASO_LC_ROUTE_BUDGET_MULT", "0"))
 # Calibrator arm: "platt" (a line in log-odds) or GAMCAL's spline (arXiv:2604.00660 App. A.2).
 LC_CALIBRATOR = os.environ.get("LASO_LC_CALIBRATOR", "platt")
+# Calibrator input: "proxy" = LR proxy logit (paper Sec. 5), "refined" = logit of the graph-refined score z_smooth.
+LC_CALIB_INPUT = os.environ.get("LASO_LC_CALIB_INPUT", "refined").strip().lower()
 LC_GAM_RIDGE = float(os.environ.get("LASO_LC_GAM_RIDGE", "1.0"))
 LC_GAM_KNOTS = int(os.environ.get("LASO_LC_GAM_KNOTS", "8"))
 LC_GAM_STOCHASTIC = os.environ.get("LASO_LC_GAM_STOCHASTIC", "0") == "1"
 # Routing objective. cost_exp > 1 is what turns alpha from a switch into a dial under a budget cap:
 # see plan_dual_threshold's docstring for the measured alpha -> routed-fraction tables.
+# R in the appendix: cross-fitting folds of the calibration stage. Each fold re-runs graph
+# refinement, so R is a compute knob as well as a statistical one; the effective value is clipped
+# by the rarer class of L and is reported as lc_n_folds_used.
+LC_FOLDS = int(os.environ.get("LASO_LC_FOLDS", "5"))
 LC_ROUTE_OBJECTIVE = os.environ.get("LASO_LC_ROUTE_OBJECTIVE", "pool")
 LC_ROUTE_COST_EXP = float(os.environ.get("LASO_LC_ROUTE_COST_EXP", "1.0"))
 
 # Active-learning sampler config (paper §3).
-ACTIVESAMPLING_VS_RATIO = 0.5            # explore fraction rho (env: LASO_VS_RATIO)
-ACTIVESAMPLING_N_PHASES = 5             # active-learning rounds T
-ACTIVESAMPLING_LR_BLEND_SCHEDULE = "linear"  # lambda_t = (t-1)/(T-1), linear 0->1 ramp across rounds (paper Alg. 1)
+ACTIVESAMPLING_VS_RATIO = 0.5            # legacy only; fixed CE rejects LASO_VS_RATIO
+ACTIVESAMPLING_N_PHASES = 5             # legacy only; no reranking in fixed CE
+ACTIVESAMPLING_LR_BLEND_SCHEDULE = "linear"  # lambda_t = (t-1)/(T-1), legacy linear 0->1 ramp across rounds
 ACTIVESAMPLING_COLD_START_PHASES = 1    # leading SigLIP-only (lambda=0) phases
 
 enable_defer = True
@@ -259,14 +258,14 @@ LLM_BATCH_SIZE = 128
 
 
 # Ablation grid: (label, sampling_strategy, refine_enabled)
-# sampling_strategy: "activeSampling"     = activeSampling sampling (arXiv 2312.09196)
+# sampling_strategy: "activeSampling" = fixed predicate-aware CE + pilot-gated acquisition; legacy is explicit
 #                    "random"     = uniform random
 #                    "uqe_active" = UQE Algorithm 2 (arXiv 2407.09522)
 #                    "top_k"      = deterministic top-K along fixed cosine
 #                                   similarity axis (Proxy-100x §5.4 baseline)
 # refine_enabled: True = Bias Diffusion + Homogeneity Propagation postprocess, False = LR-only prediction
 ABLATION_CONFIGS = [
-("activeSampling+refine+learned_deferral",      "activeSampling",     True),
+("activeSampling+refine+learned_calibration", "activeSampling", True),
 # ("activeSampling+refine+dasp_topk",        "activeSampling",     True),
 # # UQE Algorithm 2 online active-learning sampler.
 # # Spec: docs/uqe_active_implementation.md
@@ -337,21 +336,32 @@ def _learned_calibration_config(n_items: int, budget_pct: float) -> LearnedCalib
         fallback_unlimited=LC_FALLBACK_UNLIMITED,
         route_unlimited=LC_ROUTE_UNLIMITED,
         route_budget_mult=LC_ROUTE_BUDGET_MULT,
+        budget_scope=LC_BUDGET_SCOPE,
         cp_lam=LC_CP_LAM,
         cp_alpha=LC_CP_ALPHA,
         calibrator=LC_CALIBRATOR,
+        calib_input=LC_CALIB_INPUT,
         gam_ridge=LC_GAM_RIDGE,
         gam_knots=LC_GAM_KNOTS,
         gam_stochastic=LC_GAM_STOCHASTIC,
+        n_folds=LC_FOLDS,
         route_objective=LC_ROUTE_OBJECTIVE,
         route_cost_exp=LC_ROUTE_COST_EXP,
         seed=RANDOM_SEED,
+        protocol=os.environ.get("PROBE_CALIBRATION_PROTOCOL", "paper"), fixed_calibration=True,
+        rho_a=0. if LC_CALIB_INPUT == "refined" else .25, rho_b=0., rho_c=0.,
     )
 
 spark = None
 all_results = []
 results_dir = "./results/activeSampling_grid/"
 INCLUDE_NO_OPT = os.environ.get("LASO_INCLUDE_NO_OPT", "0").lower() in {"1", "true", "yes", "on"}
+# How the no-proxy baseline calls the LLM: "jni" = the Spark/Rust operator (sem_filter/sem_join with
+# proxy_sample=False), "python" = proxy_model's labelling path on every candidate (no_proxy=True), which
+# uses the same messages, chat template and answer parsing as PROBE's own oracle calls.
+NO_OPT_BACKEND = os.environ.get("LASO_NO_OPT_BACKEND", "jni").strip().lower()
+if NO_OPT_BACKEND not in {"jni", "python"}:
+    raise SystemExit(f"LASO_NO_OPT_BACKEND must be jni or python, got {NO_OPT_BACKEND!r}")
 # Join pair representation for the LR proxy: "mean" reproduces the shipped behaviour,
 # "interaction" uses [cos, Pu*Pv, |Pu-Pv|] (docs/design/2026-09-17-join-repr-experiments.md).
 PAIR_FEATURE_MODE = os.environ.get("LASO_PAIR_FEATURE_MODE", "mean").strip().lower()
@@ -392,8 +402,22 @@ def _parse_ablation_label(label):
     return (label, strat, refine_enabled)
 
 
+def _effective_phases(cluster_prof) -> int:
+    """Sampler rounds actually run. The sampler records them in its own profile; in
+    learned-calibration mode they are clipped by the sample budget, so this can be below the
+    configured ACTIVESAMPLING_N_PHASES."""
+    prof = (cluster_prof or {}).get("activeSampling_profiling") or {}
+    if prof.get("sampler") == "fixed_ce_pilot":
+        return 0  # no outer reranking rounds
+    try:
+        return int(prof["n_phases"])
+    except (KeyError, TypeError, ValueError):
+        return int(ACTIVESAMPLING_N_PHASES)
+
+
 def _laso_env_overrides():
     global BUDGET_PCTS, QUERY_BUDGET_PCTS, KNN_K_VALUES, ACTIVESAMPLING_VS_RATIO
+    global ACTIVESAMPLING_N_PHASES
     global ABLATION_CONFIGS, EMBEDDING_MODEL
     global EMBEDDING_MODELS_MULTIMODAL, EMBEDDING_MODELS_TEXT, results_dir
     global INCLUDE_NO_OPT, RANDOM_SEED
@@ -422,10 +446,18 @@ def _laso_env_overrides():
     if v:
         ACTIVESAMPLING_VS_RATIO = float(v.split(",")[0].strip())
 
+    # Rounds T of the sampler. In learned-calibration mode the effective value is clipped by the
+    # sample budget (_lc_phases); the run row records what actually ran, not what was asked for.
+    v = os.environ.get("LASO_N_PHASES")
+    if v:
+        ACTIVESAMPLING_N_PHASES = int(v.split(",")[0].strip())
+
     v = os.environ.get("LASO_ABLATIONS")
     if v:
         ABLATION_CONFIGS = [_parse_ablation_label(lbl)
                             for lbl in v.replace(",", " ").split()]
+    if os.environ.get("PROBE_ONLY_NO_OPT") == "1":
+        ABLATION_CONFIGS = []
 
     v = os.environ.get("LASO_EMBEDDING_MODEL")
     if v:
@@ -1262,6 +1294,13 @@ def calculate_pair_f1_factory(limit=None):
 # touching any other behaviour.
 REFINE_DIFFUSION_ALPHA = float(os.environ.get("LASO_REFINE_ALPHA", "0.8"))
 REFINE_PROPAGATION_BETA = float(os.environ.get("LASO_REFINE_BETA", "0.8"))
+# T1, T2: the iteration caps of the two phases. Both phases stop early once the largest score change
+# stays under 1e-4 for 5 iterations, so these are upper bounds; the row records the caps asked for and
+# the profile records the iterations that ran.
+REFINE_T1 = int(os.environ.get("LASO_REFINE_T1", "50"))
+REFINE_T2 = int(os.environ.get("LASO_REFINE_T2", "50"))
+# theta_ref: threshold on refined scores that yields the refined labels h (paper Alg. 3).
+REFINE_THETA = float(os.environ.get("LASO_REFINE_THETA", "0.5"))
 
 
 def _overrides_for(query_tag: str, default_threshold: float) -> Dict[str, float]:
@@ -1357,6 +1396,9 @@ def _collect_run_measurements(tag: str) -> Dict[str, int]:
         "py_prompt_tokens": int(py.get("prompt_tokens", 0)),
         "py_completion_tokens": int(py.get("completion_tokens", 0)),
         "py_total_tokens": int(py.get("total_tokens", 0)),
+        "py_label_true": int(py.get("label_true", 0)),
+        "py_label_false": int(py.get("label_false", 0)),
+        "py_label_unparsed": int(py.get("label_unparsed", 0)),
         "vllm_requests": vllm_requests,
         "vllm_prompt_tokens": vllm_prompt,
         "vllm_generation_tokens": vllm_gen,
@@ -1382,7 +1424,7 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
             total_pairs, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
         print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
     _knn = 0 if knn_k_val == "auto" else int(knn_k_val)
-    cfg = _effective_cfg(query_tag, ablation_label, default_threshold=0.5)
+    cfg = _effective_cfg(query_tag, ablation_label, default_threshold=REFINE_THETA)
     decision_mode = _decision_mode_for_ablation(ablation_label)
     deferral_policy = _deferral_policy_for_ablation(ablation_label)
     _emb_slug = emb_short(embedding_model)
@@ -1400,7 +1442,7 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
     start = time.time()
     joined_df = left_df.sem_join(
         right=right_df, prompt=join_prompt, model=MODEL,
-        url="http://localhost:8000/v1/chat/completions",
+        url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
         batch_size=LLM_BATCH_SIZE, verbose=True,
         embedding_model=embedding_model,
         max_concurrent_requests=128,
@@ -1410,15 +1452,14 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
         confidence_threshold=cfg["confidence_threshold"],
         diffusion_alpha=cfg["diffusion_alpha"],
         propagation_beta=cfg["propagation_beta"],
+        refine_t1=REFINE_T1,
+        refine_t2=REFINE_T2,
         refine_enabled=refine_enabled,
         lr_feature_mode=feature_mode,
         pair_feature_mode=PAIR_FEATURE_MODE,
         lr_class_weight_override="balanced",
         random_seed=RANDOM_SEED,
-        activeSampling_vs_ratio=ACTIVESAMPLING_VS_RATIO,
-        activeSampling_n_phases=(_phases if _lc_cfg is not None else ACTIVESAMPLING_N_PHASES),
-        activeSampling_lr_blend_schedule=ACTIVESAMPLING_LR_BLEND_SCHEDULE,
-        activeSampling_cold_start_phases=ACTIVESAMPLING_COLD_START_PHASES,
+        **_fixed_ce_runtime_options(RANDOM_SEED, sampling_method=sampling_strategy),
         defer_enabled=_cascade_decision_enabled(decision_mode),
         router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
@@ -1426,6 +1467,7 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
         deferral_features=DEFERRAL_FEATURES,
         lr_C=cfg["lr_C"],
         exclude_self_pairs=(query_tag in {"ecomm_q9", "movie_q5", "movie_q7", "match122"}),
+        self_pair_id_columns=("left_reviewId", "right_reviewId") if query_tag in {"movie_q5", "movie_q7"} else None,
         join_sim_mode="pair",
         knn_k=_knn,
         viz_tag=query_tag,
@@ -1451,7 +1493,7 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
             total_rows, budget_pct, ROUTER_CAP_FRAC if _router_on else 0.0)
         print(f"  budget split: total={_budget_total} sample={_budget} router_cap={_router_cap if _router_on else 'n/a'}")
     _knn = 0 if knn_k_val == "auto" else int(knn_k_val)
-    cfg = _effective_cfg(query_tag, ablation_label, default_threshold=0.5)
+    cfg = _effective_cfg(query_tag, ablation_label, default_threshold=REFINE_THETA)
     decision_mode = _decision_mode_for_ablation(ablation_label)
     deferral_policy = _deferral_policy_for_ablation(ablation_label)
     _emb_slug = emb_short(embedding_model)
@@ -1470,7 +1512,7 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
     start = time.time()
     result_df = df.sem_filter(
         prompt=filter_prompt, model=MODEL,
-        url="http://localhost:8000/v1/chat/completions",
+        url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
         batch_size=LLM_BATCH_SIZE, verbose=True,
         embedding_model=embedding_model,
         max_concurrent_requests=128,
@@ -1480,14 +1522,13 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
         confidence_threshold=cfg["confidence_threshold"],
         diffusion_alpha=cfg["diffusion_alpha"],
         propagation_beta=cfg["propagation_beta"],
+        refine_t1=REFINE_T1,
+        refine_t2=REFINE_T2,
         refine_enabled=refine_enabled,
         lr_feature_mode=feature_mode,
         lr_class_weight_override="balanced",
         random_seed=RANDOM_SEED,
-        activeSampling_vs_ratio=ACTIVESAMPLING_VS_RATIO,
-        activeSampling_n_phases=(_phases if _lc_cfg is not None else ACTIVESAMPLING_N_PHASES),
-        activeSampling_lr_blend_schedule=ACTIVESAMPLING_LR_BLEND_SCHEDULE,
-        activeSampling_cold_start_phases=ACTIVESAMPLING_COLD_START_PHASES,
+        **_fixed_ce_runtime_options(RANDOM_SEED, sampling_method=sampling_strategy),
         defer_enabled=_cascade_decision_enabled(decision_mode),
         router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
@@ -1508,14 +1549,26 @@ def run_no_opt_join_experiment(query_tag, left_df, right_df, join_prompt, exp_id
     print("=" * 60)
     _begin_run_measurements(tag)
     start = time.time()
+    if NO_OPT_BACKEND == "python":
+        from proxy_model import proxy_join
+        joined_df = proxy_join(
+            left_df, right_df, join_prompt, model=MODEL,
+            url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
+            embedding_model=EMBEDDING_MODEL, max_tokens=16, max_concurrent_requests=128,
+            exclude_self_pairs=(query_tag in {"ecomm_q9", "movie_q5", "movie_q7", "match122"}),
+            self_pair_id_columns=("left_reviewId", "right_reviewId") if query_tag in {"movie_q5", "movie_q7"} else None,
+            no_proxy=True,
+        )
+        return joined_df, tag, start
     joined_df = left_df.sem_join(
         right=right_df, prompt=join_prompt, model=MODEL,
-        url="http://localhost:8000/v1/chat/completions",
+        url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
         batch_size=32, verbose=True,
         embedding_model=EMBEDDING_MODEL,
         max_concurrent_requests=128,
         proxy_sample=False,
         exclude_self_pairs=(query_tag in {"ecomm_q9", "movie_q5", "movie_q7", "match122"}),
+        self_pair_id_columns=("left_reviewId", "right_reviewId") if query_tag in {"movie_q5", "movie_q7"} else None,
         join_sim_mode="pair",
     )
    
@@ -1530,9 +1583,17 @@ def run_no_opt_filter_experiment(query_tag, df, filter_prompt, exp_idx):
     print("=" * 60)
     _begin_run_measurements(tag)
     start = time.time()
+    if NO_OPT_BACKEND == "python":
+        from proxy_model import proxy_filter
+        # max_tokens=100 is what PROBE's filter calls get through sem_filter's default.
+        result_df = proxy_filter(
+            df, filter_prompt, model=MODEL, url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
+            embedding_model=EMBEDDING_MODEL, max_tokens=100, max_concurrent_requests=128, no_proxy=True,
+        )
+        return result_df, tag, start
     result_df = df.sem_filter(
         prompt=filter_prompt, model=MODEL,
-        url="http://localhost:8000/v1/chat/completions",
+        url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
         batch_size=32, verbose=True,
         embedding_model=EMBEDDING_MODEL,
         max_concurrent_requests=128,
@@ -1650,6 +1711,14 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         )
 
     output_path = f"{results_dir}{tag}_result.csv"
+    def json_value(value):
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        raise TypeError(f"Unsupported profiling value: {type(value).__name__}")
+    Path(f"{results_dir}{tag}_profiling.json").write_text(
+        json.dumps(profiling, default=json_value, sort_keys=True) + "\n")
     out_df.coalesce(1).write.mode("overwrite").option("header", "true").csv(output_path)
     pred_csv = resolve_prediction_csv(output_path)
 
@@ -1691,7 +1760,35 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         "duration_s": round(duration, 2),
         # Effective refinement stage weights, so a stage ablation is checkable from the results.
         "refine_diffusion_alpha": REFINE_DIFFUSION_ALPHA,
+        # Sampler rounds actually used (clipped by the budget in learned-calibration mode) and the
+        # explore rate, so a hyperparameter sweep can be read off the result row.
+        "n_phases_effective": _effective_phases(cluster_prof),
+        "vs_ratio": None if _effective_phases(cluster_prof) == 0 else ACTIVESAMPLING_VS_RATIO,
+        "sampler": (cluster_prof.get("activeSampling_profiling") or {}).get("sampler", "legacy"),
+        "sampling_config": json.dumps((cluster_prof.get("activeSampling_profiling") or {}).get("config", {}), sort_keys=True),
+        "pilot_regime": ((cluster_prof.get("activeSampling_profiling") or {}).get("pilot_state") or {}).get("regime"),
+        # SAS gate decision (paper protocol): branch taken, and the gate trace (n0, k0, L0) as JSON.
+        "pilot_mode": ((cluster_prof.get("activeSampling_profiling") or {}).get("pilot_state") or {}).get("mode"),
+        "pilot_gate": json.dumps(next((t for t in (cluster_prof.get("activeSampling_profiling") or {}).get("trace") or []
+                                       if t.get("stage") == "gate"), None), default=float),
+        "sampling_batches": json.dumps(__import__("collections").Counter(t.get("stage") for t in (cluster_prof.get("activeSampling_profiling") or {}).get("trace") or [])),
         "refine_propagation_beta": REFINE_PROPAGATION_BETA,
+        # Representation study: which model supplies the sampling axis and the proxy/graph features.
+        "repr_mode": os.environ.get("PROBE_REPR", "ce"),
+        # The oracle LLM that answered (SEMBENCH_MODEL) and how completions prompts were templated.
+        "oracle_model": MODEL,
+        "chat_template_mode": "hf" if os.environ.get("SEMBENCH_CHAT_TEMPLATE") == "hf" else "qwen_chatml",
+        "no_opt_backend": NO_OPT_BACKEND,
+        # Failed oracle requests (e.g. client timeouts) on the budgeted path, and whether the pipeline abstained
+        # (then only already-labelled rows are returned and no calibration / routing diagnostics exist).
+        "oracle_failures": (profiling.get("oracle_budget") or {}).get("failures"),
+        "result_status": cluster_prof.get("result_status", cluster_prof.get("lc_status")),
+        "lc_budget_scope_cfg": LC_BUDGET_SCOPE,
+        "ce_model": json.loads(os.environ.get("PROBE_CE_CONFIG", "{}") or "{}").get("model", "Qwen/Qwen3-VL-Reranker-2B"),
+        # Iteration caps asked for; bias_diffusion_iters / homogeneity_propagation_iters below
+        # record what convergence actually needed.
+        "refine_t1": REFINE_T1,
+        "refine_t2": REFINE_T2,
         # Rows labeled by the proxy oracle (0 for the no-opt baseline, which
         # evaluates every row/pair via Java). Kept for back-compat.
         "llm_calls": cluster_prof.get("n_labeled", "-"),
@@ -1708,17 +1805,30 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         "llm_prompt_tokens_python": usage["py_prompt_tokens"],
         "llm_completion_tokens_python": usage["py_completion_tokens"],
         "llm_total_tokens_python": usage["py_total_tokens"],
+        # Oracle answers containing "true" / "false" / neither (the last still count as label 0).
+        "oracle_answers_true": usage["py_label_true"],
+        "oracle_answers_false": usage["py_label_false"],
+        "oracle_answers_unparsed": usage["py_label_unparsed"],
         "policy_total_rows": policy_total,
         "policy_trust_proxy_count": policy_trust_proxy,
         "policy_rollback_to_llm_count": policy_defer_to_llm,
         "defer_candidates_before_cap": cluster_prof.get("defer_candidates_before_cap", "-"),
         "defer_router_cap": cluster_prof.get("defer_router_cap", "-"),
         "budget_sample_size": cluster_prof.get("budget_sample_size", "-"),
+        # Final delegation rate: oracle answers (sampling + calibration + routing, or every candidate for
+        # the no-proxy baseline) divided by the number of candidates.
+        "delegation_rate_legacy": (
+            (usage["py_label_true"] + usage["py_label_false"] + usage["py_label_unparsed"]) / policy_total
+            if policy_total > 0 else None
+        ),
         "policy_rollback_to_llm_rate": (
             policy_defer_to_llm / policy_total if policy_total > 0 else 0.0
         ),
         # 4-phase breakdown (seconds; sums to duration_s)
         "phase_embedding_s": round(phase_embedding, 3),
+        # fixed CE scoring time (cold unless PROBE_CE_CACHE already holds the scores) and the baseline axis
+        "sub_ce_s": round(float(profiling.get("ce_time", 0.0) or 0.0), 3),
+        "baseline_axis": profiling.get("baseline_axis", "default"),
         "phase_sampling_s": round(phase_sampling, 3),
         "phase_training_s": round(phase_training, 3),
         "phase_prediction_s": round(phase_prediction, 3),
@@ -1797,6 +1907,10 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
     if cluster_prof.get("defer_decision_mode") == LEARNED_CALIBRATION_MODE:
         for _key in LEARNED_CALIBRATION_RESULT_KEYS:
             out[_key] = cluster_prof.get(_key)
+    for _key in ("bargain_mode", "bargain_target", "bargain_delta", "bargain_time_s", "bargain_oracle_rows",
+                 "bargain_new_calls", "bargain_unresolved", "bargain_proxy_rows", "bargain_budget"):
+        if _key in cluster_prof:
+            out[_key] = cluster_prof.get(_key)
     # DASP decision-source breakdown: how many of the final positive /
     # negative predictions were decided by the proxy vs by the LLM
     # (split into B_proxy / B_defer / verify subsystems).
@@ -1828,6 +1942,16 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
                 out[col] = str(_v)
         else:
             out[col] = _v
+    oracle = profiling.get("oracle_budget") or {}
+    out.update(oracle_unique_labels=oracle.get("unique_labels"),
+               oracle_physical_attempts=oracle.get("candidate_attempts"),
+               oracle_http_requests=oracle.get("http_requests"),
+               oracle_failures=oracle.get("failures"),
+               delegation_rate=(oracle.get("unique_labels", 0) / policy_total
+                                if oracle and policy_total else out["delegation_rate_legacy"]),
+               ce_provenance=json.dumps(profiling.get("ce_provenance", {}), sort_keys=True),
+               gt_source_sha256=(__import__("hashlib").sha256(Path(gt_path).read_bytes()).hexdigest()
+                                 if gt_path and Path(gt_path).is_file() else None))
     return out
 
 
@@ -2095,8 +2219,11 @@ Right image: {image:right_image_filepath}"""
 
     _gtdir = "ground_truth" if _sf == "250" else "ground_truth_sf4000"
     gt_path = f"{DATA_ROOT}/SemBench/files/ecomm/raw_results/{_gtdir}/Q9.csv"
-    total_pairs = left_df.count() * right_df.count()
-    print(f"[ecomm_q9] total_pairs={total_pairs}")
+    # Budget the eligible physical candidates, matching exclude_self_pairs.
+    # Repeated IDs exclude all equal-ID pairs, not only the positional diagonal.
+    multiplicities = image_map.groupBy("id").count().collect()
+    total_pairs = sum(int(r["count"]) for r in multiplicities) ** 2 - sum(int(r["count"]) ** 2 for r in multiplicities)
+    print(f"[ecomm_q9] eligible total_pairs={total_pairs}")
 
     def id_expr(jdf):
         return jdf.filter(col("left_id") != col("right_id")).withColumn(
@@ -2195,8 +2322,11 @@ Review 1: "{left_reviewText}"
 Review 2: "{right_reviewText}" """
 
     gt_path = f"{DATA_ROOT}/SemBench/files/movie/raw_results/ground_truth/Q5.csv"
-    total_pairs = left_df.count() * right_df.count()
-    print(f"[movie_q5] total_pairs={total_pairs}")
+    # Source rows can repeat review IDs. Charge only eligible physical pairs,
+    # excluding every pair with equal review IDs, not just the positional diagonal.
+    multiplicities = reviews.groupBy("reviewId").count().collect()
+    total_pairs = sum(int(r["count"]) for r in multiplicities) ** 2 - sum(int(r["count"]) ** 2 for r in multiplicities)
+    print(f"[movie_q5] eligible total_pairs={total_pairs}")
 
     def id_expr(jdf):
         # Drop trivial self-pairs (A,A); keep ALL other predicted pairs and
@@ -3753,7 +3883,12 @@ if __name__ == "__main__":
         print(f"BUDGET_PCTS    = {BUDGET_PCTS}")
         print(f"QUERY_BUDGET_PCTS = {QUERY_BUDGET_PCTS}")
         print(f"KNN_K_VALUES   = {KNN_K_VALUES}")
-        print(f"ACTIVESAMPLING_VS_RATIO = {ACTIVESAMPLING_VS_RATIO}")
+        from dataclasses import asdict as _config_asdict
+        resolved_sampling = {
+            method: _fixed_ce_runtime_options(RANDOM_SEED, sampling_method=method)
+            for method in sorted({entry[1] for entry in ABLATION_CONFIGS})
+        }
+        print("SAMPLING_RUNTIME = " + json.dumps(resolved_sampling, default=_config_asdict, sort_keys=True))
         print(f"EMBEDDING_MODEL = {EMBEDDING_MODEL}")
         print(f"EMBEDDING_MODELS_MULTIMODAL = {EMBEDDING_MODELS_MULTIMODAL}")
         print(f"EMBEDDING_MODELS_TEXT = {EMBEDDING_MODELS_TEXT}")

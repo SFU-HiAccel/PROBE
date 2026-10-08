@@ -85,3 +85,80 @@ class TestApplyVerifiedLabels:
 
 def test_f1_zero_denominator_is_nan():
     assert np.isnan(ExpectedCounts(0.0, 0.0, 0.0).f1())
+
+
+class TestCostQualityAlpha:
+    """alpha decides how much of the routing budget is worth spending (budget stays a hard cap)."""
+
+    def _instance(self, n=40, seed=0):
+        rng = np.random.default_rng(seed)
+        p = rng.uniform(0.05, 0.95, size=n)
+        h = (p > 0.5).astype(float)
+        idx = np.arange(n)
+        counts = expected_counts(p, h, n_verified_pos=3)
+        return idx, p, h, counts
+
+    def test_alpha_one_spends_the_whole_budget(self):
+        idx, p, h, counts = self._instance()
+        plan = plan_dual_threshold(idx, p, p, h, counts, budget=10, alpha=1.0)
+        assert plan.n_calls == 10
+        assert plan.k_plus + plan.k_minus == 10
+        # identical to calling without the dial at all
+        base = plan_dual_threshold(idx, p, p, h, counts, budget=10)
+        assert (plan.k_plus, plan.k_minus) == (base.k_plus, base.k_minus)
+
+    def test_lower_alpha_never_spends_more(self):
+        idx, p, h, counts = self._instance(seed=5)
+        calls = [plan_dual_threshold(idx, p, p, h, counts, budget=20, alpha=a, n_pool=len(idx)).n_calls
+                 for a in (1.0, 0.9, 0.6, 0.3, 0.05)]
+        assert calls == sorted(calls, reverse=True)
+        assert calls[-1] < calls[0]
+
+    def test_plan_maximises_the_alpha_objective(self):
+        idx, p, h, counts = self._instance(n=25, seed=9)
+        alpha, budget = 0.7, 12
+        plan = plan_dual_threshold(idx, p, p, h, counts, budget=budget, alpha=alpha, n_pool=len(idx))
+        obj = lambda pl: alpha * pl.f_tilde - (1 - alpha) * pl.n_calls / len(idx)
+        for r in range(budget + 1):
+            other = plan_dual_threshold(idx, p, p, h, counts, budget=r, alpha=1.0)
+            assert obj(plan) >= obj(other) - 1e-12
+
+
+def _brute_best_splits(p, h, counts, r_max):
+    """Reference: for every r, scan every split k_plus (the pre-optimisation O(R^2) planner)."""
+    pos = np.asarray(h) > 0.5
+    a = np.sort(1.0 - p[pos])[::-1]
+    b = np.sort(p[~pos])[::-1]
+    sp = np.concatenate([[0.0], np.cumsum(a)])
+    sm = np.concatenate([[0.0], np.cumsum(b)])
+    ks, fs = [], []
+    for r in range(r_max + 1):
+        k = np.arange(max(0, r - b.size), min(r, a.size) + 1)
+        tp = counts.tp + sm[r - k]
+        den = 2 * tp + np.maximum(counts.fp - sp[k], 0) + np.maximum(counts.fn - sm[r - k], 0)
+        f = np.where(den > 0, 2 * tp / np.where(den > 0, den, 1), np.nan)
+        j = int(np.argmax(np.where(np.isnan(f), -np.inf, f)))
+        ks.append(int(k[j])); fs.append(float(f[j]))
+    return np.array(ks), np.array(fs)
+
+
+class TestFastSplitSearch:
+    @pytest.mark.parametrize("seed", range(40))
+    def test_matches_quadratic_reference(self, seed):
+        from budgeted_calibrated_router import best_splits
+        rng = np.random.default_rng(seed)
+        n = int(rng.integers(1, 400))
+        p = rng.beta(0.3, 3.0, n) if seed % 3 else np.round(rng.random(n), 1)   # every third: many ties
+        h = (rng.random(n) < 0.3).astype(float)
+        counts = expected_counts(p, h, n_verified_pos=int(rng.integers(0, 5)))
+        r_max = int(rng.integers(0, n + 1))
+        k_ref, f_ref = _brute_best_splits(p, h, counts, r_max)
+        pos = h > 0.5
+        a = np.sort(1.0 - p[pos])[::-1]
+        b = np.sort(p[~pos])[::-1]
+        k_new, f_new = best_splits(a, b, counts, r_max)
+        # f_new is F1 at k_new, so matching f_ref means k_new is a maximiser. Among plans whose F1
+        # ties exactly, the reference's pick is decided by float rounding, so k itself is not compared.
+        np.testing.assert_allclose(f_new, f_ref, rtol=0, atol=1e-12)
+        r = np.arange(r_max + 1)
+        assert np.all((k_new >= np.maximum(0, r - b.size)) & (k_new <= np.minimum(r, a.size)))

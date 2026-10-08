@@ -97,7 +97,11 @@ def get_last_profiling() -> dict:
 # launches many concurrent requests via a semaphore).
 # ---------------------------------------------------------------------------
 
-_TOKEN_COUNTER_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "llm_requests")
+# label_* count how oracle answers were parsed: an answer with neither "true" nor "false" is
+# "unparsed" (it still becomes label 0, as before), so a model that answers in another format, or whose
+# thinking turn is cut off by max_tokens, shows up here instead of silently turning every row negative.
+_TOKEN_COUNTER_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "llm_requests",
+                       "label_true", "label_false", "label_unparsed")
 _TOKEN_COUNTER_LOCK = threading.Lock()
 _TOKEN_COUNTER: Dict[str, int] = {k: 0 for k in _TOKEN_COUNTER_KEYS}
 
@@ -113,6 +117,44 @@ def get_last_token_usage() -> Dict[str, int]:
     """Return a snapshot of the cumulative LLM token counters."""
     with _TOKEN_COUNTER_LOCK:
         return dict(_TOKEN_COUNTER)
+
+
+_UNPARSED_EXAMPLES: List[str] = []   # first few unparsed answers, for the log
+
+
+def _count_answer(value: Optional[int], text: str) -> None:
+    """Count one parsed oracle answer: 1, 0, or None (unparsed); log the first few unparsed ones."""
+    key = {1: "label_true", 0: "label_false"}.get(value, "label_unparsed")
+    with _TOKEN_COUNTER_LOCK:
+        _TOKEN_COUNTER[key] += 1
+        log_it = key == "label_unparsed" and len(_UNPARSED_EXAMPLES) < 5
+        if log_it:
+            _UNPARSED_EXAMPLES.append(text[:200])
+    if log_it:
+        logger.warning(f"Unparsed oracle answer: {text[:200]!r}")
+
+
+def _strip_thinking(content) -> str:
+    """Final answer only: drop a <think>...</think> block (thinking mode without a server reasoning parser)."""
+    text = content or ""
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    # GLM-V models wrap the answer as <|begin_of_box|>True<|end_of_box|>.
+    return text.replace("<|begin_of_box|>", "").replace("<|end_of_box|>", "")
+
+
+def _oracle_max_tokens(default: int) -> int:
+    """SEMBENCH_ORACLE_MAX_TOKENS overrides the oracle's max_tokens (thinking mode needs room to reason)."""
+    v = os.environ.get("SEMBENCH_ORACLE_MAX_TOKENS")
+    return int(v) if v else int(default)
+
+
+def _parse_label(content) -> int:
+    """Oracle answer -> 1 if it contains "true", else 0 (unchanged rule); counts the unparsed ones."""
+    text = _strip_thinking(content).strip().lower()
+    positive = "true" in text
+    _count_answer(1 if positive else (0 if "false" in text else None), text)
+    return 1 if positive else 0
 
 
 def _record_llm_usage(usage) -> None:
@@ -1435,6 +1477,85 @@ def topk_prefilter_pairs(
     return pairs
 
 
+def bidirectional_blocking_pairs(
+    sim_matrix: np.ndarray,
+    k: int,
+    reflexive_mask: Optional[np.ndarray] = None,
+) -> List[Tuple[int, int]]:
+    """Bidirectional top-k blocking: each left row keeps its k most similar right rows, each right row
+    its k most similar left rows, and the candidate set is the union, at most k(|L|+|R|) pairs.
+
+    Reflexive pairs (self-joins) are masked before ranking so they never occupy a top-k slot.
+    Returned pairs are sorted row-major, the order of the full cross product.
+    """
+    S = np.array(sim_matrix, dtype=np.float32, copy=True)
+    if reflexive_mask is not None:
+        S[reflexive_mask] = -np.inf
+    n_left, n_right = S.shape
+    keep = np.zeros(S.shape, dtype=bool)
+    kl, kr = min(k, n_right), min(k, n_left)
+    il = np.argpartition(-S, kl - 1, axis=1)[:, :kl]
+    keep[np.arange(n_left)[:, None], il] = True
+    ir = np.argpartition(-S.T, kr - 1, axis=1)[:, :kr]
+    keep[ir, np.arange(n_right)[:, None]] = True
+    keep &= np.isfinite(S)
+    li, ri = np.nonzero(keep)
+    pairs = list(zip(li.tolist(), ri.tolist()))
+    logger.info(
+        f"Bidirectional top-k blocking: {n_left}x{n_right}={n_left * n_right} -> {len(pairs)} "
+        f"candidates (k={k}, {n_left * n_right / max(len(pairs), 1):.1f}x fewer)"
+    )
+    return pairs
+
+
+def embed_texts_siglip_fixedpad(texts: List[str], model_path: str, batch_size: int = 64) -> np.ndarray:
+    """SigLIP text embeddings padded to max_length=64, as SigLIP was trained (batch-independent).
+
+    embed_texts_siglip pads dynamically, which shifts the pooled last position of short texts (track
+    names, column names) off distribution. Used for blocking only; proxy features are unchanged.
+    """
+    import torch
+    entry = _load_siglip(model_path)
+    rep, tok = entry["replicas"][0], entry["tokenizer"]
+    out = []
+    for i in range(0, len(texts), batch_size):
+        inp = tok(texts[i:i + batch_size], padding="max_length", truncation=True, max_length=64,
+                  return_tensors="pt").to(rep["device"])
+        with torch.inference_mode(), torch.amp.autocast(device_type=rep["device"].split(":")[0],
+                                                        dtype=entry["amp_dtype"]):
+            f = rep["text_forward"](**inp)
+        f = f if torch.is_tensor(f) else f.pooler_output
+        out.append(f.float().cpu().numpy())
+    return np.concatenate(out, 0) if out else np.zeros((0, 768), dtype=np.float32)
+
+
+def blocking_similarity_matrix(
+    left_text_embs: Optional[np.ndarray],
+    right_text_embs: Optional[np.ndarray],
+    left_img_embs: Optional[np.ndarray],
+    right_img_embs: Optional[np.ndarray],
+    left_embs: np.ndarray,
+    right_embs: np.ndarray,
+) -> np.ndarray:
+    """Cosine similarity |L|x|R| with the modality logic of topk_prefilter_pairs (text-text and
+    image-image averaged when both exist, SigLIP shared space for cross-modal, combined as fallback)."""
+    def _n(x: np.ndarray) -> np.ndarray:
+        return x / (np.linalg.norm(x, axis=1, keepdims=True) + 1e-8)
+    comps = []
+    if left_text_embs is not None and right_text_embs is not None:
+        comps.append(_n(left_text_embs) @ _n(right_text_embs).T)
+    if left_img_embs is not None and right_img_embs is not None:
+        comps.append(_n(left_img_embs) @ _n(right_img_embs).T)
+    if not comps:
+        lt = left_text_embs if left_text_embs is not None else left_img_embs
+        rt = right_text_embs if right_text_embs is not None else right_img_embs
+        if lt is None or rt is None:
+            lt, rt = left_embs, right_embs
+        d = min(lt.shape[1], rt.shape[1])
+        comps.append(_n(lt[:, :d]) @ _n(rt[:, :d]).T)
+    return np.mean(comps, axis=0).astype(np.float32)
+
+
 def compute_similarity_features(
     pair_indices: List[Tuple[int, int]],
     left_embs: np.ndarray,
@@ -1647,6 +1768,48 @@ def _build_pair_interaction_features(
     return out
 
 
+# Representation study (PROBE_REPR): one model supplies both the fixed sampling axis and the features
+# of the logistic-regression proxy and the kNN graph.
+#   mixed      (default) cross-encoder axis, bi-encoder features: the behaviour before this switch
+#   biencoder  axis = cosine of the embedding model; filter features = row embeddings, join features =
+#              [Pu*Pv, |Pu-Pv|] (InferSent / SBERT pair features over PCA-projected rows)
+#   ce         axis = cross-encoder score; features = its last-token hidden state, PCA-reduced
+REPR_MODES = ("mixed", "biencoder", "ce")
+CE_HIDDEN_RANK = int(os.environ.get("PROBE_CE_HIDDEN_RANK", "256"))
+
+
+def _repr_mode() -> str:
+    mode = os.environ.get("PROBE_REPR", "ce").strip().lower()
+    if mode not in REPR_MODES:
+        raise ValueError(f"PROBE_REPR must be one of {REPR_MODES}, got {mode!r}")
+    return mode
+
+
+def _reduce_rows(x: np.ndarray, rank: int = CE_HIDDEN_RANK) -> np.ndarray:
+    """L2-normalise rows, PCA-project to at most `rank` dims (fitted on these rows), re-normalise.
+
+    Used for cross-encoder hidden states (1.5k-2k dims): the proxy is trained on a few dozen labels
+    and the kNN graph uses Euclidean distance, so both need a compact, unit-scaled representation.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    x = x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+    if x.shape[0] <= 1:
+        return x[:, :rank]
+    r = int(max(1, min(rank, x.shape[1], x.shape[0] - 1)))
+    if r < x.shape[1]:
+        from sklearn.decomposition import PCA
+        x = PCA(n_components=r, random_state=0).fit_transform(x).astype(np.float32)
+        x = x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
+    return x
+
+
+def _build_pair_hadamard_absdiff(pair_indices, left_embs, right_embs,
+                                 rank: int = PAIR_INTERACTION_RANK) -> np.ndarray:
+    """Pair features ``[Pu*Pv, |Pu-Pv|]``: the InferSent / SBERT classifier features without the cosine
+    column (its information is the sum of the product block)."""
+    return np.ascontiguousarray(_build_pair_interaction_features(pair_indices, left_embs, right_embs, rank)[:, 1:])
+
+
 def embed_texts(texts: List[str], embedding_model: str) -> np.ndarray:
     from proxy_model_backends import get_backend
     return get_backend(embedding_model).embed_texts(texts)
@@ -1695,10 +1858,7 @@ def _call_llm_single(
         extra_body=_labeller_extra_body(),
     )
     _record_llm_usage(getattr(resp, "usage", None))
-    content = (resp.choices[0].message.content or "").strip().lower()
-    if "true" in content:
-        return 1
-    return 0
+    return _parse_label(resp.choices[0].message.content)
 
 
 # --- Expert-call retry policy --------------------------------------------------
@@ -1754,8 +1914,7 @@ async def _call_llm_single_async(
                     extra_body=_labeller_extra_body(),
                 )
                 _record_llm_usage(getattr(resp, "usage", None))
-                content = (resp.choices[0].message.content or "").strip().lower()
-                return 1 if "true" in content else 0
+                return _parse_label(resp.choices[0].message.content)
             except Exception as e:
                 if attempt < LLM_MAX_ATTEMPTS:
                     logger.warning(f"Async expert request attempt {attempt}/{LLM_MAX_ATTEMPTS} errored "
@@ -1825,8 +1984,7 @@ async def _call_llm_single_raw_async(
             if not choices:
                 return 0
             msg = choices[0].get("message") or {}
-            content = (msg.get("content") or "").strip().lower()
-            return 1 if "true" in content else 0
+            return _parse_label(msg.get("content"))
         return 0
 
 
@@ -1976,7 +2134,10 @@ _QWEN_CHAT_TEMPLATE = (
     "<|im_start|>user\n{user}<|im_end|>\n"
     "<|im_start|>assistant\n"
 )
-_CHAT_TEMPLATE = os.environ.get("SEMBENCH_CHAT_TEMPLATE", _QWEN_CHAT_TEMPLATE)
+# Default: Qwen ChatML only for Qwen models; any other oracle (default Gemma 4 since 2026-09-24) uses its own
+# HF chat template, so a non-Qwen model never silently receives Qwen-formatted prompts.
+_CHAT_TEMPLATE = os.environ.get("SEMBENCH_CHAT_TEMPLATE") or (
+    _QWEN_CHAT_TEMPLATE if "qwen" in os.environ.get("SEMBENCH_MODEL", "google/gemma-4-26B-A4B-it").lower() else "hf")
 
 # --- Qwen3 / Qwen3.6 hybrid-thinking mode ---------------------------------
 # Qwen3 / Qwen3.6 are hybrid reasoning models: by default they emit a
@@ -2042,7 +2203,35 @@ def _labeller_extra_body() -> Dict[str, Any]:
     }
 
 
-def _format_chat_prompt(system_prompt: str, user_content: str) -> str:
+_HF_TOKENIZERS: Dict[str, Any] = {}
+
+
+def _hf_chat_prompt(model: str, system_prompt: str, user_content: str) -> str:
+    """Render one prompt with the served model's own Hugging Face chat template.
+
+    Selected with SEMBENCH_CHAT_TEMPLATE=hf, so /v1/completions batching works for models whose
+    format is not Qwen's ChatML (Gemma, GLM). Thinking follows SEMBENCH_ENABLE_THINKING through the
+    template's `enable_thinking` switch; a template without a system role gets the system prompt
+    prepended to the user turn.
+    """
+    tok = _HF_TOKENIZERS.get(model)
+    if tok is None:
+        from transformers import AutoTokenizer
+        tok = _HF_TOKENIZERS[model] = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+    kw = dict(tokenize=False, add_generation_prompt=True, enable_thinking=bool(_ENABLE_THINKING))
+    try:
+        return tok.apply_chat_template(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}], **kw)
+    except Exception:
+        return tok.apply_chat_template(
+            [{"role": "user", "content": f"{system_prompt}\n\n{user_content}"}], **kw)
+
+
+def _format_chat_prompt(system_prompt: str, user_content: str, model: Optional[str] = None) -> str:
+    if _CHAT_TEMPLATE == "hf":
+        if not model:
+            raise ValueError("SEMBENCH_CHAT_TEMPLATE=hf needs the served model id")
+        return _hf_chat_prompt(model, system_prompt, user_content)
     prompt = _CHAT_TEMPLATE.format(system=system_prompt, user=user_content)
     if not _ENABLE_THINKING and _CHAT_TEMPLATE is _QWEN_CHAT_TEMPLATE:
         # Mirror the server-side `enable_thinking=False` behaviour for the
@@ -2059,7 +2248,7 @@ def _all_text(row_texts: List[Union[str, list]]) -> bool:
 
 
 def _parse_label_from_text(text: str) -> int:
-    return 1 if "true" in (text or "").strip().lower() else 0
+    return _parse_label(text)
 
 
 async def _label_chunk_via_completions_async(
@@ -2072,7 +2261,7 @@ async def _label_chunk_via_completions_async(
     temperature: float,
     semaphore: asyncio.Semaphore,
 ) -> List[int]:
-    prompts = [_format_chat_prompt(system_prompt, t) for t in chunk_texts]
+    prompts = [_format_chat_prompt(system_prompt, t, model) for t in chunk_texts]
     # /v1/completions does not apply the chat template server-side, so
     # chat_template_kwargs is meaningless here — but we still need to pin
     # the sampling overrides to neutralise the vLLM server's
@@ -2260,6 +2449,7 @@ def label_rows_with_llm(
     max_concurrent_requests: int = 256,
     budget: Optional[dict] = None,
     chat_batch_size: int = 32,
+    _use_label_cache: bool = True,
 ) -> np.ndarray:
     """Label rows with LLM. Uses async I/O for higher vLLM throughput.
 
@@ -2273,6 +2463,7 @@ def label_rows_with_llm(
     """
     if len(row_texts) == 0:
         return np.array([], dtype=np.int32)
+    max_tokens = _oracle_max_tokens(max_tokens)
 
     remaining = _budget_remaining(budget)
     if remaining <= 0:
@@ -2291,7 +2482,24 @@ def label_rows_with_llm(
         row_texts = row_texts[:remaining]
 
     labels = None
-    loop = _get_or_create_event_loop()
+    import label_cache  # opt-in (PROBE_LABEL_CACHE); the budget below still counts every row
+    if _use_label_cache and label_cache.enabled():
+        extra = _labeller_extra_body()
+        keys = [label_cache.key(model, system_prompt, t, extra, max_tokens) for t in row_texts]
+        cached = [label_cache.get(k) for k in keys]
+        miss = [i for i, y in enumerate(cached) if y is None]
+        for y in cached:  # a cached answer is still an oracle answer for the delegation counters
+            if y is not None:
+                _count_answer(y, "cache")
+        labels = np.array([0 if y is None else y for y in cached], dtype=np.int32)
+        if miss:
+            fresh = label_rows_with_llm(
+                [row_texts[i] for i in miss], model, url, system_prompt, max_tokens, temperature,
+                max_concurrent_requests, None, chat_batch_size, _use_label_cache=False)
+            for i, y in zip(miss, fresh):
+                labels[i] = int(y)
+                label_cache.put(keys[i], int(y))
+    loop = _get_or_create_event_loop() if labels is None else None
     if loop is not None:
         try:
             labels = loop.run_until_complete(
@@ -3323,6 +3531,47 @@ def _online_refine(
     return current_model, np.array(all_indices), np.array(all_labels, dtype=np.int32)
 
 
+def _make_fixed_ce_oracle(texts, model, url, system_prompt, max_tokens,
+                          temperature, concurrency, sample_size, budget_size,
+                          calibration_config, router_max_calls, paper_protocol=True):
+    from oracle_budget import PipelineOracle, OpenAIOracleRequest
+    limit = (int(calibration_config.total_budget) if calibration_config is not None
+             else int(sample_size) + max(0, int(router_max_calls or 0)))
+    if budget_size is not None:
+        limit = min(limit, max(0, int(budget_size)))
+    max_tokens = _oracle_max_tokens(max_tokens)
+    oracle = PipelineOracle(
+        texts, limit=max(0, limit), concurrency=concurrency,
+        request_factory=lambda: OpenAIOracleRequest(
+            dict(enumerate(texts)), model=model, base_url=url,
+            system_prompt=system_prompt, max_tokens=max_tokens,
+            temperature=temperature, extra_body=_labeller_extra_body()))
+    if ((calibration_config is not None and calibration_config.budget_scope == "preparation")
+            or (calibration_config is None and paper_protocol)):
+        # The allowance covers sampling + calibration only; routing may reach any remaining candidate.
+        # Without this ledger the routing calls hit the total-budget limit and calibration abstains.
+        from oracle_budget import PreparationLedger
+        oracle.ledger = PreparationLedger(len(texts), max(0, limit))
+    return oracle
+
+
+def _resolve_paper_operator(n, sample_size, budget_size, sampling_method, backend,
+                            decision_mode, config, defer_enabled):
+    """Resolve default public execution; explicit legacy decisions stay explicit."""
+    if decision_mode is None:
+        if sampling_method == "activeSampling" and backend == "fixed_ce":
+            from learned_calibration import paper_calibration_config
+            if config is None:
+                b = min(n, sample_size if budget_size is None else budget_size)
+                config = paper_calibration_config(max(0, int(b)))
+            decision_mode, defer_enabled = "learned_calibration", True
+        else:
+            decision_mode = "force_label"
+    if config is not None and decision_mode == "learned_calibration":
+        sample_size = config.sample_budget
+    return sample_size, decision_mode, config, defer_enabled
+
+
 def proxy_filter(
     df: DataFrame,
     prompt: str,
@@ -3330,7 +3579,7 @@ def proxy_filter(
     url: str,
     embedding_model: str,
     sample_size: int = 200,
-    sampling_method: str = "random",
+    sampling_method: str = "activeSampling",
     imbalance_strategy: str = "weighted",
     proxy_model_path: str = "",
     proxy_warm_start: bool = False,
@@ -3357,6 +3606,8 @@ def proxy_filter(
     diffusion_alpha: float = 0.8,
     propagation_beta: float = 0.8,
     refine_num_iter: int = 50,
+    refine_t1: Optional[int] = None,
+    refine_t2: Optional[int] = None,
     refine_tol: float = 1e-4,
     refine_patience: int = 5,
     refine_enabled: bool = True,
@@ -3376,7 +3627,7 @@ def proxy_filter(
     defer_enabled: bool = False,
     verify_uncertain: bool = True,
     router_max_calls: Optional[int] = None,
-    decision_mode: str = "force_label",
+    decision_mode: Optional[str] = None,
     learned_calibration_config: Optional[Any] = None,
     deferral_features: Optional[Sequence[str]] = None,
     deferral_rank_axis: str = "blended",
@@ -3392,6 +3643,10 @@ def proxy_filter(
     lr_class_weight_override: Optional[str] = None,
     random_seed: Optional[int] = 42,
     viz_tag: str = "",
+    activeSampling_backend: str = "fixed_ce",
+    fixed_ce_config: Optional[Any] = None,
+    ce_config: Optional[Any] = None,
+    no_proxy: bool = False,
 ) -> DataFrame:
     spark = df.sparkSession
     start_time = time.time()
@@ -3420,9 +3675,33 @@ def proxy_filter(
     texts = [build_row_message(row, prompt, columns, image_cols) for row in records]
     prof["data_prep_time"] = time.time() - t0_prep
 
+    if no_proxy:
+        # No-proxy baseline: the same messages and oracle path as PROBE's labelling, on every row,
+        # without embeddings, sampling, a proxy or a budget.
+        t0_llm = time.time()
+        full_oracle = _make_fixed_ce_oracle(
+            texts, model, url, FILTER_SYSTEM_PROMPT, max_tokens, temperature,
+            max_concurrent_requests, total_rows, None, None, 0)
+        labels = full_oracle.label_ids(list(range(total_rows)), stage="fallback")
+        prof["oracle_budget"] = full_oracle.ledger.snapshot()
+        mask = np.asarray(labels) == 1
+        prof["vllm_invocation_time"] = time.time() - t0_llm
+        result_spark_df = _pandas_to_spark(spark, pdf[mask].reset_index(drop=True), schema=df.schema)
+        prof["total_time"] = time.time() - start_time
+        prof["cluster_profiling"] = {"mode": "no_proxy", "n_labeled": len(texts), "n_total": len(texts)}
+        _set_last_profiling(prof)
+        logger.info(f"No-proxy filter: {int(mask.sum())}/{total_rows} rows kept in {prof['total_time']:.2f}s")
+        return result_spark_df
+
+    sample_size, decision_mode, learned_calibration_config, defer_enabled = _resolve_paper_operator(
+        total_rows, sample_size, budget_size, sampling_method, activeSampling_backend,
+        decision_mode, learned_calibration_config, defer_enabled)
+    ce_only = _repr_mode() == "ce" and activeSampling_backend == "fixed_ce"
     logger.info(f"Embedding {total_rows} rows...")
     t0_emb = time.time()
-    if image_cols:
+    if ce_only:
+        embeddings = np.zeros((total_rows, 1), dtype=np.float32)
+    elif image_cols:
         # Multimodal query — route through the backend's text+image encoders
         # via embed_rows. Works for any backend that supports embed_images
         # (SigLIP, CLIP, Jina-CLIP, GTE-Qwen2-VL). Text-only backends routed
@@ -3443,7 +3722,17 @@ def proxy_filter(
     if sampling_method in _CLUSTER_METHODS:
         from cluster_proxy import cluster_proxy_pipeline
 
+        fixed_oracle = None
+        if activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
+            fixed_oracle = _make_fixed_ce_oracle(
+                texts, model, url, FILTER_SYSTEM_PROMPT, max_tokens, temperature,
+                max_concurrent_requests, sample_size, budget_size,
+                learned_calibration_config, router_max_calls,
+                paper_protocol=getattr(fixed_ce_config, "protocol", "paper") == "paper")
+
         def _make_label_fn():
+            if fixed_oracle is not None:
+                return fixed_oracle
             def _label(row_texts: List[Union[str, list]]) -> np.ndarray:
                 return label_rows_with_llm(
                     row_texts, model, url,
@@ -3457,7 +3746,7 @@ def proxy_filter(
         sim_features = None
         filter_sims = None
         _sim_methods = ("stratified", "kmeans_stratified", "activeSampling", "top_k")
-        if lr_feature_mode == "similarity" or sampling_method in _sim_methods:
+        if not ce_only and (lr_feature_mode == "similarity" or sampling_method in _sim_methods):
             t0_sim = time.time()
             prompt_emb = embed_query(prompt, embedding_model)
             norms_e = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8
@@ -3469,62 +3758,121 @@ def proxy_filter(
                 logger.info(f"Proxy: using similarity features (dim={sim_features.shape[1]})")
             prof["similarity_time"] = time.time() - t0_sim
 
-        positive_mask, cluster_prof = cluster_proxy_pipeline(
-            embeddings, texts, _make_label_fn,
-            sample_size=sample_size,
-            cluster_proxy_mode=cluster_proxy_mode,
-            knn_k=knn_k,
-            confidence_threshold=confidence_threshold,
-            lr_features=sim_features,
-            sampling_method=sampling_method,
-            similarities=filter_sims,
-            n_strata=n_strata,
-            bas_pilot_ratio=bas_pilot_ratio,
-            allocation_method=allocation_method,
-            reg_method=reg_method,
-            reg_strength=reg_strength,
-            n_clusters=n_clusters,
-            auto_k=auto_k,
-            refine=refine,
-            diffusion_alpha=diffusion_alpha,
-            propagation_beta=propagation_beta,
-            refine_num_iter=refine_num_iter,
-            refine_tol=refine_tol,
-            refine_patience=refine_patience,
-            refine_enabled=refine_enabled,
-            activeSampling_B1=activeSampling_B1,
-            activeSampling_vs_ratio=activeSampling_vs_ratio,
-            activeSampling_n_modes=activeSampling_n_modes,
-            activeSampling_k_intervals=activeSampling_k_intervals,
-            activeSampling_k_auto=activeSampling_k_auto,
-            activeSampling_k_max=activeSampling_k_max,
-            activeSampling_k_gain_tol=activeSampling_k_gain_tol,
-            activeSampling_class_balance=activeSampling_class_balance,
-            activeSampling_n_phases=activeSampling_n_phases,
-            activeSampling_lr_blend_schedule=activeSampling_lr_blend_schedule,
-            activeSampling_cold_start_phases=activeSampling_cold_start_phases,
-            activeSampling_lr_explore_frac=activeSampling_lr_explore_frac,
-            activeSampling_phase_budget_split=activeSampling_phase_budget_split,
-            defer_enabled=defer_enabled,
-            verify_uncertain=verify_uncertain,
-            router_max_calls=router_max_calls,
-            decision_mode=decision_mode,
-            learned_calibration_config=learned_calibration_config,
-            deferral_features=deferral_features,
-            deferral_rank_axis=deferral_rank_axis,
-            deferral_hidden_dims_grid=deferral_hidden_dims_grid,
-            deferral_alpha_grid=deferral_alpha_grid,
-            deferral_k_folds=deferral_k_folds,
-            deferral_inner_cv_k=deferral_inner_cv_k,
-            deferral_dagger_beta=deferral_dagger_beta,
-            deferral_min_inner_cv_auc=deferral_min_inner_cv_auc,
-            deferral_min_probe_auc=deferral_min_probe_auc,
-            lr_C=lr_C,
-            base_threshold=base_threshold,
-            lr_class_weight_override=lr_class_weight_override,
-            random_seed=random_seed,
-            viz_tag=viz_tag,
-        )
+        repr_mode = _repr_mode()
+        graph_features, lr_feats = embeddings, sim_features
+        ce_scores = None
+        if activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
+            if repr_mode == "biencoder":
+                if filter_sims is None:
+                    raise ValueError("PROBE_REPR=biencoder needs the predicate-row cosine axis")
+                ce_scores = filter_sims
+                prof["ce_time"] = 0.0
+            else:
+                from ce_ranker import score_filter
+                t0_ce = time.time()
+                out = score_filter(
+                    records, columns, image_cols, prompt, list(range(total_rows)),
+                    config=ce_config, cache_dir=os.environ.get("PROBE_CE_CACHE", ".cache/probe_ce"),
+                    return_hidden=repr_mode == "ce")
+                ce_scores, ce_info = out[0], out[1]
+                filter_sims = ce_scores
+                if repr_mode == "ce":
+                    graph_features, lr_feats = _reduce_rows(out[2]), None
+                prof["ce_time"] = time.time() - t0_ce
+                prof["ce_provenance"] = {k: v for k, v in ce_info.items() if k != "manifest"}
+        elif repr_mode != "mixed":
+            raise ValueError("PROBE_REPR requires activeSampling with the fixed_ce backend")
+        elif sampling_method in ("top_k", "stratified") and os.environ.get("PROBE_BASELINE_AXIS") == "ce":
+            # Sampler ablation: rank by the same fixed CE score as the PROBE sampler, not SigLIP cosine.
+            from ce_ranker import score_filter
+            t0_ce = time.time()
+            filter_sims = np.asarray(score_filter(
+                records, columns, image_cols, prompt, list(range(total_rows)),
+                config=ce_config, cache_dir=os.environ.get("PROBE_CE_CACHE", ".cache/probe_ce"))[0], dtype=float)
+            prof["ce_time"] = time.time() - t0_ce
+            prof["baseline_axis"] = "ce"
+        prof["repr_mode"] = repr_mode
+        prof["repr_feature_dim"] = int(graph_features.shape[1])
+
+        from oracle_budget import OracleLabelsUnavailable
+        try:
+            positive_mask, cluster_prof = cluster_proxy_pipeline(
+                graph_features, texts, _make_label_fn,
+                sample_size=sample_size,
+                cluster_proxy_mode=cluster_proxy_mode,
+                knn_k=knn_k,
+                confidence_threshold=confidence_threshold,
+                lr_features=lr_feats,
+                sampling_method=sampling_method,
+                similarities=filter_sims,
+                activeSampling_backend=activeSampling_backend,
+                fixed_ce_config=fixed_ce_config,
+                fixed_ce_scores=ce_scores,
+                n_strata=n_strata,
+                bas_pilot_ratio=bas_pilot_ratio,
+                allocation_method=allocation_method,
+                reg_method=reg_method,
+                reg_strength=reg_strength,
+                n_clusters=n_clusters,
+                auto_k=auto_k,
+                refine=refine,
+                diffusion_alpha=diffusion_alpha,
+                propagation_beta=propagation_beta,
+                refine_num_iter=refine_num_iter,
+                refine_t1=refine_t1,
+                refine_t2=refine_t2,
+                refine_tol=refine_tol,
+                refine_patience=refine_patience,
+                refine_enabled=refine_enabled,
+                activeSampling_B1=activeSampling_B1,
+                activeSampling_vs_ratio=activeSampling_vs_ratio,
+                activeSampling_n_modes=activeSampling_n_modes,
+                activeSampling_k_intervals=activeSampling_k_intervals,
+                activeSampling_k_auto=activeSampling_k_auto,
+                activeSampling_k_max=activeSampling_k_max,
+                activeSampling_k_gain_tol=activeSampling_k_gain_tol,
+                activeSampling_class_balance=activeSampling_class_balance,
+                activeSampling_n_phases=activeSampling_n_phases,
+                activeSampling_lr_blend_schedule=activeSampling_lr_blend_schedule,
+                activeSampling_cold_start_phases=activeSampling_cold_start_phases,
+                activeSampling_lr_explore_frac=activeSampling_lr_explore_frac,
+                activeSampling_phase_budget_split=activeSampling_phase_budget_split,
+                defer_enabled=defer_enabled,
+                verify_uncertain=verify_uncertain,
+                router_max_calls=router_max_calls,
+                decision_mode=decision_mode,
+                learned_calibration_config=learned_calibration_config,
+                deferral_features=deferral_features,
+                deferral_rank_axis=deferral_rank_axis,
+                deferral_hidden_dims_grid=deferral_hidden_dims_grid,
+                deferral_alpha_grid=deferral_alpha_grid,
+                deferral_k_folds=deferral_k_folds,
+                deferral_inner_cv_k=deferral_inner_cv_k,
+                deferral_dagger_beta=deferral_dagger_beta,
+                deferral_min_inner_cv_auc=deferral_min_inner_cv_auc,
+                deferral_min_probe_auc=deferral_min_probe_auc,
+                lr_C=lr_C,
+                base_threshold=base_threshold,
+                lr_class_weight_override=lr_class_weight_override,
+                random_seed=random_seed,
+                viz_tag=viz_tag,
+            )
+        except OracleLabelsUnavailable:
+            if fixed_oracle is None:
+                raise
+            positive_mask = np.zeros(len(fixed_oracle.texts), dtype=bool)
+            for key, value in fixed_oracle.ledger.cache.items():
+                positive_mask[key] = bool(value)
+            cluster_prof = {
+                "result_status": "abstain", "stop_reason": "oracle_labels_unavailable",
+                "verified_positive_ids": np.flatnonzero(positive_mask).tolist(),
+                "unresolved_ids": [i for i in range(len(positive_mask)) if i not in fixed_oracle.ledger.cache],
+                "quality_certificate": None,
+            }
+        if fixed_oracle is not None:
+            prof["oracle_budget"] = fixed_oracle.ledger.snapshot()
+            if budget is not None:
+                budget["used"] = fixed_oracle.ledger.used
 
         t0_result = time.time()
         result_pdf = pdf[positive_mask].reset_index(drop=True)
@@ -3669,6 +4017,43 @@ def proxy_filter(
     return _pandas_to_spark(spark, result_pdf, schema=df.schema)
 
 
+def _assemble_join_result(spark, left_pdf, right_pdf, left_records, right_records, matched_indices):
+    """Matched (left, right) index pairs -> Spark DataFrame; overlapping columns get left_/right_ prefixes."""
+    if not matched_indices:
+        from pyspark.sql.types import StructType, StructField, StringType
+        left_cols = list(left_pdf.columns)
+        right_cols = list(right_pdf.columns)
+        overlapping = set(left_cols) & set(right_cols)
+        fields = []
+        for c in left_cols:
+            name = f"left_{c}" if c in overlapping else c
+            fields.append(StructField(name, StringType(), True))
+        for c in right_cols:
+            name = f"right_{c}" if c in overlapping else c
+            fields.append(StructField(name, StringType(), True))
+        schema = StructType(fields)
+        jvm = spark._jvm
+        jschema = spark._jsparkSession.parseDataType(schema.json())
+        empty_rdd = jvm.java.util.ArrayList()
+        jdf = spark._jsparkSession.createDataFrame(empty_rdd, jschema)
+        from pyspark.sql import DataFrame as SparkDataFrame
+        result_spark_df = SparkDataFrame(jdf, spark)
+    else:
+        left_cols = list(left_pdf.columns)
+        right_cols = list(right_pdf.columns)
+        overlapping = set(left_cols) & set(right_cols)
+        rows = []
+        for li, ri in matched_indices:
+            left_row = {(f"left_{c}" if c in overlapping else c): v for c, v in left_records[li].items()}
+            right_row = {(f"right_{c}" if c in overlapping else c): v for c, v in right_records[ri].items()}
+            rows.append({**left_row, **right_row})
+
+        result_pdf = pd.DataFrame(rows)
+        logger.info(f"{len(result_pdf)} candidate pairs matched")
+        result_spark_df = _pandas_to_spark(spark, result_pdf)
+    return result_spark_df
+
+
 def proxy_join(
     left_df: DataFrame,
     right_df: DataFrame,
@@ -3677,7 +4062,7 @@ def proxy_join(
     url: str,
     embedding_model: str,
     sample_size: int = 500,
-    sampling_method: str = "random",
+    sampling_method: str = "activeSampling",
     imbalance_strategy: str = "weighted",
     proxy_model_path: str = "",
     proxy_warm_start: bool = False,
@@ -3693,6 +4078,7 @@ def proxy_join(
     topk_prefilter: bool = False,
     topk_k: int = 0,
     exclude_self_pairs: bool = False,
+    self_pair_id_columns: Optional[Tuple[str, str]] = None,
     join_sim_mode: str = "pair",
     lr_feature_mode: str = "embedding",
     pair_feature_mode: str = "mean",
@@ -3710,6 +4096,8 @@ def proxy_join(
     diffusion_alpha: float = 0.8,
     propagation_beta: float = 0.8,
     refine_num_iter: int = 50,
+    refine_t1: Optional[int] = None,
+    refine_t2: Optional[int] = None,
     refine_tol: float = 1e-4,
     refine_patience: int = 5,
     refine_enabled: bool = True,
@@ -3729,7 +4117,7 @@ def proxy_join(
     defer_enabled: bool = False,
     verify_uncertain: bool = True,
     router_max_calls: Optional[int] = None,
-    decision_mode: str = "force_label",
+    decision_mode: Optional[str] = None,
     learned_calibration_config: Optional[Any] = None,
     deferral_features: Optional[Sequence[str]] = None,
     deferral_rank_axis: str = "blended",
@@ -3745,6 +4133,10 @@ def proxy_join(
     lr_class_weight_override: Optional[str] = None,
     random_seed: Optional[int] = 42,
     viz_tag: str = "",
+    activeSampling_backend: str = "fixed_ce",
+    fixed_ce_config: Optional[Any] = None,
+    ce_config: Optional[Any] = None,
+    no_proxy: bool = False,
 ) -> DataFrame:
     """Proxy-based semantic join with optional top-K pre-filtering."""
     spark = left_df.sparkSession
@@ -3790,6 +4182,35 @@ def proxy_join(
     image_cols = _get_image_columns(prompt)
     prof["data_prep_time"] = time.time() - t0_prep
 
+    if no_proxy:
+        # No-proxy baseline: every candidate pair (reflexive pairs excluded as in PROBE) labelled by the
+        # oracle with PROBE's messages and labelling path; no embeddings, sampling, proxy or budget.
+        pairs = [(i, j) for i in range(n_left) for j in range(n_right)]
+        if exclude_self_pairs:
+            from candidate_identity import exclude_reflexive_pairs
+            pairs = exclude_reflexive_pairs(pairs, left_records, right_records, self_pair_id_columns)
+        pair_msgs = [build_pair_message(left_records[i], right_records[j], prompt,
+                                        left_columns, right_columns, image_cols) for i, j in pairs]
+        t0_llm = time.time()
+        full_oracle = _make_fixed_ce_oracle(
+            pair_msgs, model, url, JOIN_SYSTEM_PROMPT, max_tokens, temperature,
+            max_concurrent_requests, len(pairs), None, None, 0)
+        labels = full_oracle.label_ids(list(range(len(pairs))), stage="fallback")
+        prof["oracle_budget"] = full_oracle.ledger.snapshot()
+        prof["vllm_invocation_time"] = time.time() - t0_llm
+        matched = [p for p, y in zip(pairs, np.asarray(labels)) if y == 1]
+        result_spark_df = _assemble_join_result(spark, left_pdf, right_pdf, left_records, right_records, matched)
+        prof["total_time"] = time.time() - start_time
+        prof["cluster_profiling"] = {"mode": "no_proxy", "n_labeled": len(pairs), "n_total": len(pairs)}
+        _set_last_profiling(prof)
+        logger.info(f"No-proxy join: {len(matched)}/{len(pairs)} pairs matched in {prof['total_time']:.2f}s")
+        return result_spark_df
+
+    sample_size, decision_mode, learned_calibration_config, defer_enabled = _resolve_paper_operator(
+        total_pairs, sample_size, budget_size, sampling_method, activeSampling_backend,
+        decision_mode, learned_calibration_config, defer_enabled)
+    ce_only = _repr_mode() == "ce" and activeSampling_backend == "fixed_ce"
+    ce_only = ce_only and int(os.environ.get("PROBE_BLOCKING_K", "0")) == 0
     # ---- Embedding Phase ----
     # Always embed left and right sides independently. All supported
     # backends (SigLIP, CLIP, Jina-CLIP, GTE-Qwen2-VL, SentenceTransformer,
@@ -3800,12 +4221,19 @@ def proxy_join(
     # topk_prefilter.
     t0_emb = time.time()
     logger.info(f"Embedding left ({n_left}) and right ({n_right}) rows independently...")
-    indep = embed_rows_independent(
-        left_records, right_records, prompt, embedding_model,
-        left_columns, right_columns,
-        feature_mode="average" if lr_feature_mode == "average" else "concat",
-        viz_tag=viz_tag,
-    )
+    if ce_only:
+        left_zero = np.zeros((n_left, 1), dtype=np.float32)
+        right_zero = np.zeros((n_right, 1), dtype=np.float32)
+        indep = dict(left_embs=left_zero, right_embs=right_zero,
+                     left_text_embs=left_zero, right_text_embs=right_zero,
+                     left_img_embs=None, right_img_embs=None)
+    else:
+        indep = embed_rows_independent(
+            left_records, right_records, prompt, embedding_model,
+            left_columns, right_columns,
+            feature_mode="average" if lr_feature_mode == "average" else "concat",
+            viz_tag=viz_tag,
+        )
     left_embs = indep["left_embs"]
     right_embs = indep["right_embs"]
     left_text_embs = indep["left_text_embs"]
@@ -3813,8 +4241,56 @@ def proxy_join(
     left_img_embs = indep["left_img_embs"]
     right_img_embs = indep["right_img_embs"]
 
-    # ---- Top-K Pre-filtering ----
-    if topk_prefilter and left_embs is not None:
+    # ---- Bidirectional top-k blocking (PROBE_BLOCKING_K > 0) ----
+    # Every later stage (CE pass, SAS, proxy, graph, router, LLM) then sees only the candidate set C.
+    # With PROBE_BLOCKING_BUDGET=candidates (default) the LLM budget is B% of |C| instead of B% of N.
+    blocking_k = int(os.environ.get("PROBE_BLOCKING_K", "0"))
+    if blocking_k > 0:
+        t0_blk = time.time()
+        blk_lt, blk_rt = left_text_embs, right_text_embs
+        if "siglip" in str(embedding_model).lower():
+            _img = set(image_cols)
+            _ltc = [c for c in left_columns if c not in _img]
+            _rtc = [c for c in right_columns if c not in _img]
+            if blk_lt is not None and _ltc:
+                blk_lt = embed_texts_siglip_fixedpad(
+                    [" ".join(str(r.get(c, "")) for c in _ltc) for r in left_records], embedding_model)
+            if blk_rt is not None and _rtc:
+                blk_rt = embed_texts_siglip_fixedpad(
+                    [" ".join(str(r.get(c, "")) for c in _rtc) for r in right_records], embedding_model)
+        sim = blocking_similarity_matrix(blk_lt, blk_rt, left_img_embs,
+                                         right_img_embs, left_embs, right_embs)
+        reflexive = None
+        if exclude_self_pairs:
+            if self_pair_id_columns is None:
+                reflexive = np.eye(n_left, n_right, dtype=bool) if n_left == n_right else None
+            else:
+                lc, rc = self_pair_id_columns
+                lid = np.array([str(r[lc]) for r in left_records])
+                rid = np.array([str(r[rc]) for r in right_records])
+                reflexive = lid[:, None] == rid[None, :]
+        pair_indices = bidirectional_blocking_pairs(sim, blocking_k, reflexive)
+        n_full = total_pairs - (int(reflexive.sum()) if reflexive is not None else 0)
+        ratio = len(pair_indices) / max(n_full, 1)
+        if os.environ.get("PROBE_BLOCKING_BUDGET", "candidates") == "candidates":
+            if learned_calibration_config is not None:
+                import dataclasses
+                from router_cap import MIN_TOTAL_BUDGET
+                old_total = int(learned_calibration_config.total_budget)
+                learned_calibration_config = dataclasses.replace(
+                    learned_calibration_config,
+                    total_budget=max(MIN_TOTAL_BUDGET, int(round(old_total * ratio))))
+                sample_size = int(learned_calibration_config.sample_budget)
+                logger.info(f"Blocking budget: total {old_total} -> "
+                            f"{learned_calibration_config.total_budget} (|C|/N={ratio:.4f})")
+            elif sample_size:
+                sample_size = max(1, int(round(sample_size * ratio)))
+        effective_pairs = len(pair_indices)
+        prof["blocking"] = {"k": blocking_k, "n_full": n_full, "n_candidates": effective_pairs,
+                            "reduction": n_full / max(effective_pairs, 1),
+                            "time_s": time.time() - t0_blk}
+        prof["embedding_time"] += time.time() - t0_blk
+    elif topk_prefilter and left_embs is not None:
         k = topk_k if topk_k > 0 else max(10, int(max(n_left, n_right) * 0.2))
         pair_indices = topk_prefilter_pairs(
             left_embs, right_embs, k,
@@ -3826,17 +4302,16 @@ def proxy_join(
         pair_indices = [(i, j) for i in range(n_left) for j in range(n_right)]
         effective_pairs = total_pairs
 
-    if exclude_self_pairs and n_left == n_right:
+    if exclude_self_pairs:
+        from candidate_identity import exclude_reflexive_pairs
         n_before = len(pair_indices)
-        pair_indices = [(i, j) for (i, j) in pair_indices if i != j]
-        n_after = len(pair_indices)
-        logger.info(
-            f"exclude_self_pairs=True: dropped {n_before - n_after} reflexive pairs "
-            f"from cartesian product (now {n_after} pairs)"
-        )
-        effective_pairs = len(pair_indices)
+        pair_indices = exclude_reflexive_pairs(
+            pair_indices, left_records, right_records, self_pair_id_columns)
+        effective_pairs = total_pairs = len(pair_indices)
+        logger.info(f"Excluded {n_before-effective_pairs} reflexive candidate pairs")
+    elif blocking_k > 0:
         total_pairs = effective_pairs
-        effective_pairs = total_pairs
+
 
     # ---- Build LR features ----
     # pair_embeddings: features used for LR proxy training
@@ -3892,7 +4367,17 @@ def proxy_join(
     if sampling_method in _CLUSTER_JOIN_METHODS:
         from cluster_proxy import cluster_proxy_pipeline
 
+        fixed_oracle = None
+        if activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
+            fixed_oracle = _make_fixed_ce_oracle(
+                pair_texts, model, url, JOIN_SYSTEM_PROMPT, max_tokens, temperature,
+                max_concurrent_requests, sample_size, budget_size,
+                learned_calibration_config, router_max_calls,
+                paper_protocol=getattr(fixed_ce_config, "protocol", "paper") == "paper")
+
         def _make_join_label_fn():
+            if fixed_oracle is not None:
+                return fixed_oracle
             def _label(row_texts: List[Union[str, list]]) -> np.ndarray:
                 return label_rows_with_llm(
                     row_texts, model, url,
@@ -4021,98 +4506,132 @@ def proxy_join(
                 )
             prof["similarity_time"] = time.time() - t0_sim
 
-        positive_mask, cluster_prof = cluster_proxy_pipeline(
-            sampling_embeddings, pair_texts, _make_join_label_fn,
-            sample_size=sample_size,
-            cluster_proxy_mode=cluster_proxy_mode,
-            knn_k=knn_k,
-            confidence_threshold=confidence_threshold,
-            lr_features=sim_features,
-            sampling_method=sampling_method,
-            similarities=join_sims,
-            n_strata=n_strata,
-            bas_pilot_ratio=bas_pilot_ratio,
-            allocation_method=allocation_method,
-            reg_method=reg_method,
-            reg_strength=reg_strength,
-            n_clusters=n_clusters,
-            auto_k=auto_k,
-            refine=refine,
-            diffusion_alpha=diffusion_alpha,
-            propagation_beta=propagation_beta,
-            refine_num_iter=refine_num_iter,
-            refine_tol=refine_tol,
-            refine_patience=refine_patience,
-            refine_enabled=refine_enabled,
-            activeSampling_B1=activeSampling_B1,
-            activeSampling_vs_ratio=activeSampling_vs_ratio,
-            activeSampling_n_modes=activeSampling_n_modes,
-            activeSampling_k_intervals=activeSampling_k_intervals,
-            activeSampling_k_auto=activeSampling_k_auto,
-            activeSampling_k_max=activeSampling_k_max,
-            activeSampling_k_gain_tol=activeSampling_k_gain_tol,
-            activeSampling_class_balance=activeSampling_class_balance,
-            activeSampling_n_phases=activeSampling_n_phases,
-            activeSampling_lr_blend_schedule=activeSampling_lr_blend_schedule,
-            activeSampling_cold_start_phases=activeSampling_cold_start_phases,
-            activeSampling_lr_explore_frac=activeSampling_lr_explore_frac,
-            activeSampling_phase_budget_split=activeSampling_phase_budget_split,
-            defer_enabled=defer_enabled,
-            verify_uncertain=verify_uncertain,
-            router_max_calls=router_max_calls,
-            decision_mode=decision_mode,
-            learned_calibration_config=learned_calibration_config,
-            deferral_features=deferral_features,
-            deferral_rank_axis=deferral_rank_axis,
-            deferral_hidden_dims_grid=deferral_hidden_dims_grid,
-            deferral_alpha_grid=deferral_alpha_grid,
-            deferral_k_folds=deferral_k_folds,
-            deferral_inner_cv_k=deferral_inner_cv_k,
-            deferral_dagger_beta=deferral_dagger_beta,
-            deferral_min_inner_cv_auc=deferral_min_inner_cv_auc,
-            deferral_min_probe_auc=deferral_min_probe_auc,
-            lr_C=lr_C,
-            base_threshold=base_threshold,
-            lr_class_weight_override=lr_class_weight_override,
-            random_seed=random_seed,
-            viz_tag=viz_tag,
-        )
+        repr_mode = _repr_mode()
+        graph_features, lr_feats = sampling_embeddings, sim_features
+        ce_scores = None
+        if activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
+            if repr_mode == "biencoder":
+                if join_sims is None:
+                    raise ValueError("PROBE_REPR=biencoder needs the left-right cosine axis")
+                ce_scores = join_sims
+                t0_pf = time.time()
+                graph_features = _build_pair_hadamard_absdiff(pair_indices, left_embs, right_embs)
+                lr_feats = None
+                prof["pair_feature_time"] = time.time() - t0_pf
+                prof["ce_time"] = 0.0
+            else:
+                from ce_ranker import score_join
+                t0_ce = time.time()
+                out = score_join(
+                    left_records, right_records, pair_indices, left_columns, right_columns,
+                    image_cols, prompt, [[int(i), int(j)] for i, j in pair_indices],
+                    config=ce_config, cache_dir=os.environ.get("PROBE_CE_CACHE", ".cache/probe_ce"),
+                    return_hidden=repr_mode == "ce")
+                ce_scores, ce_info = out[0], out[1]
+                join_sims = ce_scores
+                if repr_mode == "ce":
+                    graph_features, lr_feats = _reduce_rows(out[2]), None
+                prof["ce_time"] = time.time() - t0_ce
+                prof["ce_provenance"] = {k: v for k, v in ce_info.items() if k != "manifest"}
+        elif repr_mode != "mixed":
+            raise ValueError("PROBE_REPR requires activeSampling with the fixed_ce backend")
+        elif sampling_method in ("top_k", "stratified") and os.environ.get("PROBE_BASELINE_AXIS") == "ce":
+            # Sampler ablation: rank pairs by the same fixed joint CE score as the PROBE sampler.
+            from ce_ranker import score_join
+            t0_ce = time.time()
+            join_sims = np.asarray(score_join(
+                left_records, right_records, pair_indices, left_columns, right_columns,
+                image_cols, prompt, [[int(i), int(j)] for i, j in pair_indices],
+                config=ce_config, cache_dir=os.environ.get("PROBE_CE_CACHE", ".cache/probe_ce"))[0], dtype=float)
+            prof["ce_time"] = time.time() - t0_ce
+            prof["baseline_axis"] = "ce"
+        prof["repr_mode"] = repr_mode
+        prof["repr_feature_dim"] = int(graph_features.shape[1])
+
+        from oracle_budget import OracleLabelsUnavailable
+        try:
+            positive_mask, cluster_prof = cluster_proxy_pipeline(
+                graph_features, pair_texts, _make_join_label_fn,
+                sample_size=sample_size,
+                cluster_proxy_mode=cluster_proxy_mode,
+                knn_k=knn_k,
+                confidence_threshold=confidence_threshold,
+                lr_features=lr_feats,
+                sampling_method=sampling_method,
+                similarities=join_sims,
+                activeSampling_backend=activeSampling_backend,
+                fixed_ce_config=fixed_ce_config,
+                fixed_ce_scores=ce_scores,
+                n_strata=n_strata,
+                bas_pilot_ratio=bas_pilot_ratio,
+                allocation_method=allocation_method,
+                reg_method=reg_method,
+                reg_strength=reg_strength,
+                n_clusters=n_clusters,
+                auto_k=auto_k,
+                refine=refine,
+                diffusion_alpha=diffusion_alpha,
+                propagation_beta=propagation_beta,
+                refine_num_iter=refine_num_iter,
+                refine_t1=refine_t1,
+                refine_t2=refine_t2,
+                refine_tol=refine_tol,
+                refine_patience=refine_patience,
+                refine_enabled=refine_enabled,
+                activeSampling_B1=activeSampling_B1,
+                activeSampling_vs_ratio=activeSampling_vs_ratio,
+                activeSampling_n_modes=activeSampling_n_modes,
+                activeSampling_k_intervals=activeSampling_k_intervals,
+                activeSampling_k_auto=activeSampling_k_auto,
+                activeSampling_k_max=activeSampling_k_max,
+                activeSampling_k_gain_tol=activeSampling_k_gain_tol,
+                activeSampling_class_balance=activeSampling_class_balance,
+                activeSampling_n_phases=activeSampling_n_phases,
+                activeSampling_lr_blend_schedule=activeSampling_lr_blend_schedule,
+                activeSampling_cold_start_phases=activeSampling_cold_start_phases,
+                activeSampling_lr_explore_frac=activeSampling_lr_explore_frac,
+                activeSampling_phase_budget_split=activeSampling_phase_budget_split,
+                defer_enabled=defer_enabled,
+                verify_uncertain=verify_uncertain,
+                router_max_calls=router_max_calls,
+                decision_mode=decision_mode,
+                learned_calibration_config=learned_calibration_config,
+                deferral_features=deferral_features,
+                deferral_rank_axis=deferral_rank_axis,
+                deferral_hidden_dims_grid=deferral_hidden_dims_grid,
+                deferral_alpha_grid=deferral_alpha_grid,
+                deferral_k_folds=deferral_k_folds,
+                deferral_inner_cv_k=deferral_inner_cv_k,
+                deferral_dagger_beta=deferral_dagger_beta,
+                deferral_min_inner_cv_auc=deferral_min_inner_cv_auc,
+                deferral_min_probe_auc=deferral_min_probe_auc,
+                lr_C=lr_C,
+                base_threshold=base_threshold,
+                lr_class_weight_override=lr_class_weight_override,
+                random_seed=random_seed,
+                viz_tag=viz_tag,
+            )
+        except OracleLabelsUnavailable:
+            if fixed_oracle is None:
+                raise
+            positive_mask = np.zeros(len(fixed_oracle.texts), dtype=bool)
+            for key, value in fixed_oracle.ledger.cache.items():
+                positive_mask[key] = bool(value)
+            cluster_prof = {
+                "result_status": "abstain", "stop_reason": "oracle_labels_unavailable",
+                "verified_positive_ids": np.flatnonzero(positive_mask).tolist(),
+                "unresolved_ids": [i for i in range(len(positive_mask)) if i not in fixed_oracle.ledger.cache],
+                "quality_certificate": None,
+            }
+        if fixed_oracle is not None:
+            prof["oracle_budget"] = fixed_oracle.ledger.snapshot()
+            if budget is not None:
+                budget["used"] = fixed_oracle.ledger.used
 
         t0_result = time.time()
         matched_indices = [pair_indices[i] for i in range(effective_pairs) if positive_mask[i]]
-
-        if not matched_indices:
-            from pyspark.sql.types import StructType, StructField, StringType
-            left_cols = list(left_pdf.columns)
-            right_cols = list(right_pdf.columns)
-            overlapping = set(left_cols) & set(right_cols)
-            fields = []
-            for c in left_cols:
-                name = f"left_{c}" if c in overlapping else c
-                fields.append(StructField(name, StringType(), True))
-            for c in right_cols:
-                name = f"right_{c}" if c in overlapping else c
-                fields.append(StructField(name, StringType(), True))
-            schema = StructType(fields)
-            jvm = spark._jvm
-            jschema = spark._jsparkSession.parseDataType(schema.json())
-            empty_rdd = jvm.java.util.ArrayList()
-            jdf = spark._jsparkSession.createDataFrame(empty_rdd, jschema)
-            from pyspark.sql import DataFrame as SparkDataFrame
-            result_spark_df = SparkDataFrame(jdf, spark)
-        else:
-            left_cols = list(left_pdf.columns)
-            right_cols = list(right_pdf.columns)
-            overlapping = set(left_cols) & set(right_cols)
-            rows = []
-            for li, ri in matched_indices:
-                left_row = {(f"left_{c}" if c in overlapping else c): v for c, v in left_records[li].items()}
-                right_row = {(f"right_{c}" if c in overlapping else c): v for c, v in right_records[ri].items()}
-                rows.append({**left_row, **right_row})
-
-            result_pdf = pd.DataFrame(rows)
-            logger.info(f"{len(result_pdf)}/{effective_pairs} candidate pairs matched")
-            result_spark_df = _pandas_to_spark(spark, result_pdf)
+        result_spark_df = _assemble_join_result(spark, left_pdf, right_pdf, left_records, right_records,
+                                                matched_indices)
         prof["result_assembly_time"] = time.time() - t0_result
 
         duration = time.time() - start_time

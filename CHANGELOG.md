@@ -1,3 +1,10 @@
+# VLDB artifact preparation
+
+- Enable the active paper's SAS and CE defaults at public boundaries, exact preparation-budget split, uncapped S3/routing and refined-score Platt calibration.
+- Add serial paper planning, standard-library dry-runs, immutable output validation, run locks, job-level resume and explicit evidence gaps.
+- Preserve research originals; document upstream licenses, current environments, clean installation, real Spark smoke and one complete LRO113 candidate-universe run.
+- Full-paper baseline/figure reproduction remains unverified; see the artifact alignment and validation records.
+
 # Changelog
 
 ## [Unreleased] - 2026-09-16

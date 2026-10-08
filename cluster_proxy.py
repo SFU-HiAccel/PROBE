@@ -19,6 +19,7 @@ from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.neighbors import NearestNeighbors
+from bargain_refined import bargain_mode as _bargain_mode, run_bargain_on_refined as _run_bargain_on_refined
 
 
 logger = logging.getLogger("proxy_model")
@@ -2720,6 +2721,8 @@ def predict_with_score_refinement(
     alpha: float = 0.8,
     beta: float = 0.8,
     num_iter: int = 50,
+    num_iter_bias: Optional[int] = None,
+    num_iter_prop: Optional[int] = None,
     tol: float = 1e-4,
     patience: int = 5,
     imbalance_strategy: str = "balanced",
@@ -2743,17 +2746,25 @@ def predict_with_score_refinement(
     """
     n = embeddings.shape[0]
     prof: Dict[str, Any] = {}
+    # T1, T2 in the paper: the caps of the two phases. They share `num_iter` unless the caller
+    # separates them (the appendix sensitivity study does). Both phases still exit early on
+    # convergence, so the cap is an upper bound, not the number of iterations that will run.
+    t1 = int(num_iter if num_iter_bias is None else num_iter_bias)
+    t2 = int(num_iter if num_iter_prop is None else num_iter_prop)
+    prof["bias_diffusion_cap"] = t1
+    prof["homogeneity_propagation_cap"] = t2
 
     # --- Stage A: LR base prediction ---
     t0 = time.time()
     unique_classes = np.unique(labeled_values)
     if len(unique_classes) < 2:
-        single_class = int(unique_classes[0])
+        single_class = int(unique_classes[0]) if len(unique_classes) else None
         logger.warning(
             f"Bias Diffusion + Homogeneity Propagation: only one class ({single_class}) in labeled set — "
             f"returning constant prediction"
         )
-        base_probas = np.full(n, float(single_class), dtype=np.float64)
+        base_probas = np.full(n, .5 if single_class is None else float(single_class), dtype=np.float64)
+        prof["no_training_labels"] = single_class is None
         prof["lr_fit_time"] = 0.0
         prof["lr_predict_time"] = time.time() - t0
         prof["lr_training_time"] = prof["lr_fit_time"] + prof["lr_predict_time"]
@@ -2822,7 +2833,7 @@ def predict_with_score_refinement(
     pinned_residuals = E_init[pinned_idx].copy()
     E_final, bias_diffusion_iters = _diffuse_with_early_exit(
         S, E_init, pinned_idx, pinned_residuals,
-        alpha=alpha, num_iter=num_iter, tol=tol, patience=patience,
+        alpha=alpha, num_iter=t1, tol=tol, patience=patience,
     )
     # FDiff-scale (Huang et al. 2021, Sec. 2.2): write the corrected prediction
     # only on unlabeled rows; labeled rows keep their base prediction Z[L].
@@ -2869,7 +2880,7 @@ def predict_with_score_refinement(
         G_init[pinned_idx] = pinned_labels
     z_smooth, homogeneity_propagation_iters = _diffuse_with_early_exit(
         S, G_init, pinned_idx, pinned_labels,
-        alpha=beta, num_iter=num_iter, tol=tol, patience=patience,
+        alpha=beta, num_iter=t2, tol=tol, patience=patience,
         clip01=False,  # paper Alg. 3 Phase 2: f^(t) = (1-beta) f^(0) + beta S f^(t-1), no per-iter clip
     )
     prof["homogeneity_propagation_time"] = time.time() - t0
@@ -2925,6 +2936,8 @@ def _compute_oof_z_smooth_and_corrected(
     diffusion_alpha: float = 0.8,
     propagation_beta: float = 0.8,
     refine_num_iter: int = 50,
+    refine_t1: Optional[int] = None,
+    refine_t2: Optional[int] = None,
     refine_tol: float = 1e-4,
     refine_patience: int = 5,
     imbalance_strategy: str = "balanced",
@@ -2987,6 +3000,8 @@ def _compute_oof_z_smooth_and_corrected(
             alpha=diffusion_alpha,
             beta=propagation_beta,
             num_iter=refine_num_iter,
+            num_iter_bias=refine_t1,
+            num_iter_prop=refine_t2,
             tol=refine_tol,
             patience=refine_patience,
             imbalance_strategy=imbalance_strategy,
@@ -3028,10 +3043,16 @@ def auto_kmeans_k(n: int) -> int:
 
 
 def auto_knn_k(n: int) -> int:
-    """Heuristic KNN K: max(5, min(round(log2(N)*3), 50))."""
+    """Active manuscript: round(3 log2 N), bounded only by available neighbors.
+
+    Historical capped appendix behavior requires PROBE_KNN_PROTOCOL=legacy.
+    """
     if n <= 1:
         return 1
-    return max(5, min(round(math.log2(n) * 3), 50))
+    k = round(math.log2(n) * 3)
+    if os.environ.get("PROBE_KNN_PROTOCOL", "paper") == "legacy":
+        return max(5, min(k, 50))
+    return min(n - 1, max(1, k))
 
 
 def label_propagation_cutssl(
@@ -3193,10 +3214,13 @@ def _run_learned_calibration_stage(
     lr_logit: Optional[np.ndarray],
     *,
     config: Any,
+    refined_score: Optional[np.ndarray] = None,
     confidence_threshold: float,
     diffusion_alpha: float,
     propagation_beta: float,
     refine_num_iter: int,
+    refine_t1: Optional[int],
+    refine_t2: Optional[int],
     refine_tol: float,
     refine_patience: int,
     imbalance_strategy: str,
@@ -3209,23 +3233,38 @@ def _run_learned_calibration_stage(
     Writes ``lc_*`` diagnostics plus the ``defer_*`` keys run.py already reads,
     so ``policy_rollback_to_llm_count`` counts the A and D calls.
     """
-    from learned_calibration import OofFeatures, compute_oof_features, run_learned_calibration
+    from learned_calibration import OofFeatures, compute_oof_features, refined_logit, run_learned_calibration
+
+    # calib_input="refined": the calibrator reads the logit of the graph-refined score z_smooth, and the
+    # out-of-fold features of L use each fold's own refinement; the design of A stays on the LR logit.
+    use_refined = getattr(config, "calib_input", "proxy") == "refined"
+    if use_refined and refined_score is None:
+        raise ValueError("calib_input='refined' needs the graph-refined score")
+    x_cal = refined_logit(refined_score) if use_refined and lr_logit is not None else None
 
     t0 = time.time()
 
     def refine_fn(train_idx: np.ndarray, train_y: np.ndarray):
-        mask, _, prof = predict_with_score_refinement(
+        mask, z_fold, prof = predict_with_score_refinement(
             lr_input, W, train_idx, train_y,
             confidence_threshold=confidence_threshold,
             alpha=diffusion_alpha, beta=propagation_beta,
-            num_iter=refine_num_iter, tol=refine_tol, patience=refine_patience,
+            num_iter=refine_num_iter, num_iter_bias=refine_t1, num_iter_prop=refine_t2,
+            tol=refine_tol, patience=refine_patience,
             imbalance_strategy=imbalance_strategy, lr_C=lr_C,
             base_threshold=base_threshold, return_logit=True,
         )
+        if use_refined:
+            return mask, (None if prof.get("lr_logit") is None else refined_logit(z_fold))
         return mask, prof.get("lr_logit")
 
     def label_rows(row_ids: np.ndarray) -> np.ndarray:
+        if hasattr(label_fn, "label_ids"):
+            return label_fn.label_ids(row_ids, stage="A/D")
         return np.asarray(label_fn([texts[int(i)] for i in row_ids]), dtype=np.int32)
+
+    if hasattr(label_fn, "label_ids"):
+        label_rows.for_stage = lambda ids, stage: label_fn.label_ids(ids, stage=stage)
 
     if lr_logit is None:
         oof = OofFeatures(None, None, "proxy_logit_unavailable")
@@ -3234,18 +3273,41 @@ def _run_learned_calibration_stage(
             refine_fn, labeled_indices, labeled_values,
             n_folds=config.n_folds, seed=config.seed,
         )
-    result = run_learned_calibration(
-        x=lr_logit,
-        h=np.asarray(positive_mask, dtype=np.float64),
-        labeled_indices=labeled_indices,
-        labeled_values=labeled_values,
-        oof=oof,
-        label_rows=label_rows,
-        config=config,
-    )
+    from oracle_budget import OracleLabelsUnavailable
+    try:
+        result = run_learned_calibration(
+            x=lr_logit,
+            h=np.asarray(positive_mask, dtype=np.float64),
+            labeled_indices=labeled_indices,
+            labeled_values=labeled_values,
+            oof=oof,
+            label_rows=label_rows,
+            config=config,
+            x_cal=x_cal,
+        )
+    except OracleLabelsUnavailable:
+        session = getattr(label_fn, "oracle_session", None)
+        if session is None:
+            raise
+        final = np.zeros(len(texts), dtype=bool)
+        for key, value in session.ledger.cache.items():
+            final[int(key)] = bool(value)
+        profiling.update(lc_status="abstain", lc_reason="oracle_labels_unavailable",
+                         lc_calls_total=session.ledger.used)
+        return final
     router_calls = int(result.calib_idx.size + result.verify_idx.size)
     elapsed = time.time() - t0
     profiling.update(result.diagnostics)
+    audit_dir = os.environ.get("LASO_LC_AUDIT_DIR", "").strip()
+    session = getattr(label_fn, "oracle_session", None)
+    if audit_dir and lr_logit is not None and session is not None:
+        # Evaluation only (calibration_audit.py): labels an extra sample on a separate ledger after routing;
+        # decisions and call counts are unchanged, but the run's wall clock includes the audit.
+        from calibration_audit import run_audit
+        profiling.update(run_audit(
+            result=result, x=lr_logit, h=np.asarray(positive_mask, dtype=np.float64),
+            labeled_indices=labeled_indices, labeled_values=labeled_values, session=session,
+            config=config, out_dir=audit_dir, n=int(os.environ.get("LASO_LC_AUDIT_N", "3000")), x_cal=x_cal))
     profiling["lc_time_s"] = float(elapsed)
     profiling["defer_enabled"] = True
     profiling["defer_decision_mode"] = "learned_calibration"
@@ -3254,7 +3316,7 @@ def _run_learned_calibration_stage(
     profiling["defer_verify_positive"] = int(result.final_pos[result.calib_idx].sum()
                                              + result.final_pos[result.verify_idx].sum())
     profiling["defer_candidates_before_cap"] = router_calls
-    profiling["defer_router_cap"] = max(0, int(config.total_budget) - int(len(labeled_indices)))
+    profiling["defer_router_cap"] = None if config.budget_scope == "preparation" else max(0, int(config.total_budget) - int(len(labeled_indices)))
     profiling["budget_sample_size"] = int(config.sample_budget)
     profiling["defer_total_time"] = float(elapsed)
     logger.info(
@@ -3263,6 +3325,40 @@ def _run_learned_calibration_stage(
         f"calls={result.diagnostics.get('lc_calls_total')}/{config.total_budget}"
     )
     return result.final_pos
+
+
+def _whole_query_llm_fallback(texts, label_fn, raw_label_fn, labeled_indices, labeled_values,
+                              profiling, vllm_time_acc):
+    """Label every candidate outside L with the LLM and return the LLM answer (paper §3.2)."""
+    n_total = len(texts)
+    labeled_indices = np.asarray(labeled_indices, dtype=np.int64)
+    rest = np.setdiff1d(np.arange(n_total), labeled_indices)
+    t0 = time.time()
+    if rest.size and hasattr(label_fn, "label_ids"):
+        values = np.asarray(label_fn.label_ids(rest.tolist(), stage="fallback"), dtype=np.int32)
+    elif rest.size:
+        values = np.asarray(label_fn([texts[int(i)] for i in rest]), dtype=np.int32)
+    else:
+        values = np.zeros(0, dtype=np.int32)
+    positive_mask = np.zeros(n_total, dtype=bool)
+    positive_mask[labeled_indices[np.asarray(labeled_values) == 1]] = True
+    positive_mask[rest[values == 1]] = True
+    unresolved = rest[(values != 0) & (values != 1)]
+    profiling.update(
+        whole_query_fallback=True, whole_query_fallback_calls=int(rest.size),
+        whole_query_fallback_unresolved=int(unresolved.size),
+        whole_query_fallback_time=time.time() - t0, vllm_time=float(vllm_time_acc[0]),
+        lc_status="whole_query_llm", n_total=int(n_total),
+        result_status="llm_executed" if not unresolved.size else "llm_executed_with_failures",
+        discovery_status="positive_found" if positive_mask.any() else "llm_verified_empty",
+    )
+    if hasattr(raw_label_fn, "ledger"):
+        profiling["oracle_budget"] = raw_label_fn.ledger.snapshot()
+        profiling["unresolved_ids"] = unresolved.tolist()
+    profiling["n_predicted_positive"] = int(positive_mask.sum())
+    logger.info(f"Whole-query LLM fallback: labelled {rest.size} rows, "
+                f"predicted_pos={int(positive_mask.sum())}/{n_total}")
+    return positive_mask, profiling
 
 
 def cluster_proxy_pipeline(
@@ -3287,6 +3383,8 @@ def cluster_proxy_pipeline(
     diffusion_alpha: float = 0.8,
     propagation_beta: float = 0.8,
     refine_num_iter: int = 50,
+    refine_t1: Optional[int] = None,
+    refine_t2: Optional[int] = None,
     refine_tol: float = 1e-4,
     refine_patience: int = 5,
     refine_enabled: bool = True,
@@ -3330,6 +3428,9 @@ def cluster_proxy_pipeline(
     lr_class_weight_override: Optional[str] = None,
     random_seed: Optional[int] = 42,
     viz_tag: str = "",
+    activeSampling_backend: str = "fixed_ce",
+    fixed_ce_config: Optional[Any] = None,
+    fixed_ce_scores: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Sample + predict pipeline.
 
@@ -3372,6 +3473,10 @@ def cluster_proxy_pipeline(
                 f"{int(learned_calibration_config.sample_budget)}"
             )
 
+    if activeSampling_backend == "fixed_ce" and learned_calibration_config is not None:
+        from dataclasses import replace
+        learned_calibration_config = replace(learned_calibration_config, fixed_calibration=True)
+
     raw_label_fn = label_fn_factory()
 
     def label_fn(texts: List[Union[str, list]]) -> np.ndarray:
@@ -3379,6 +3484,16 @@ def cluster_proxy_pipeline(
         result = raw_label_fn(texts)
         vllm_time_acc[0] += time.time() - t0
         return result
+
+    if hasattr(raw_label_fn, "label_ids"):
+        def label_ids(ids, *, stage="L"):
+            t0 = time.time()
+            try:
+                return raw_label_fn.label_ids(ids, stage=stage)
+            finally:
+                vllm_time_acc[0] += time.time() - t0
+        label_fn.label_ids = label_ids
+        label_fn.oracle_session = raw_label_fn
 
     profiling["sampling_method"] = sampling_method
     if random_seed is not None:
@@ -3464,8 +3579,27 @@ def cluster_proxy_pipeline(
         cluster_stats = {}
         final_cluster_labels = np.zeros(n_total, dtype=np.int32)
     elif sampling_method == "activeSampling":
-        if similarities is None:
-            raise ValueError("similarities array is required for sampling_method='activeSampling'")
+        if similarities is None and activeSampling_backend == "legacy":
+            raise ValueError("similarities array is required for legacy sampling_method='activeSampling'")
+
+        if activeSampling_backend not in ("legacy", "fixed_ce"):
+            raise ValueError("activeSampling_backend must be fixed_ce or legacy")
+        sampler = sample_activeSampling
+        if activeSampling_backend == "fixed_ce":
+            from fixed_ce_sampling import SamplingConfig, sample_fixed_ce_texts
+            if fixed_ce_scores is None or np.asarray(fixed_ce_scores).shape != (n_total,):
+                raise ValueError("fixed_ce backend requires aligned explicit fixed_ce_scores")
+            similarities = np.asarray(fixed_ce_scores, dtype=float)
+            cfg = fixed_ce_config or SamplingConfig(seed=int(random_seed or 0))
+            logger.warning(
+                "fixed_ce sampler replaces legacy B1/vs_ratio/modes/k_auto/class_balance/"
+                "phase/blend/explore controls; use fixed_ce_config for sampler settings"
+            )
+
+            def sampler(_embeddings, scores, row_texts, oracle, size, **legacy_options):
+                return sample_fixed_ce_texts(
+                    scores, row_texts, oracle, size, config=cfg,
+                    original_ids=(list(range(n_total)) if len(row_texts) == n_total else eligible_idx.tolist()))
 
         t0 = time.time()
         if learned_deferral_active and probe_indices.size > 0:
@@ -3473,7 +3607,7 @@ def cluster_proxy_pipeline(
             sample_embeddings = embeddings[eligible_idx]
             sample_similarities = similarities[eligible_idx]
             sample_texts = [texts[int(i)] for i in eligible_idx.tolist()]
-            local_labeled, labeled_values, activeSampling_W, dir_prof = sample_activeSampling(
+            local_labeled, labeled_values, activeSampling_W, dir_prof = sampler(
                 sample_embeddings, sample_similarities, sample_texts, label_fn,
                 activeSampling_sample_size, knn_k=knn_k, B1=activeSampling_B1,
                 vs_ratio=activeSampling_vs_ratio, n_modes=activeSampling_n_modes,
@@ -3497,7 +3631,7 @@ def cluster_proxy_pipeline(
             if activeSampling_W is not None and activeSampling_W.shape[0] != n_total:
                 activeSampling_W = None
         else:
-            labeled_indices, labeled_values, activeSampling_W, dir_prof = sample_activeSampling(
+            labeled_indices, labeled_values, activeSampling_W, dir_prof = sampler(
                 embeddings, similarities, texts, label_fn,
                 sample_size, knn_k=knn_k, B1=activeSampling_B1,
                 vs_ratio=activeSampling_vs_ratio, n_modes=activeSampling_n_modes,
@@ -3528,6 +3662,13 @@ def cluster_proxy_pipeline(
         if _final_axis is not None and len(_final_axis) == n_total:
             activeSampling_final_axis = np.asarray(_final_axis, dtype=np.float64).reshape(-1)
         profiling["activeSampling_profiling"] = dir_prof
+        # Paper Alg. 1, lines 12-13: without both classes in L no proxy can be trained, so the whole
+        # query goes to the LLM and every later stage (proxy, refinement, calibration, routing) is
+        # skipped. Stage 'fallback' is outside the preparation allowance.
+        if (activeSampling_backend == "fixed_ce" and getattr(cfg, "protocol", "legacy") == "paper"
+                and (n_pos_labeled == 0 or n_pos_labeled == len(labeled_values))):
+            return _whole_query_llm_fallback(
+                texts, label_fn, raw_label_fn, labeled_indices, labeled_values, profiling, vllm_time_acc)
         cluster_stats = {}
         final_cluster_labels = np.zeros(n_total, dtype=np.int32)
 
@@ -3658,6 +3799,9 @@ def cluster_proxy_pipeline(
     # True; stratified and kmeans_stratified use the classic LP + final
     # prediction pipeline.
     _refine_methods = ("activeSampling", "random", "uqe_active", "top_k")
+    # With refinement off every sampler reaches the same LR-only predictor, so a sampler ablation
+    # varies only the sampler; stratified+refine keeps the classic LP pipeline.
+    _lr_only_methods = _refine_methods + ("stratified",)
     lr_input = lr_features if lr_features is not None else embeddings
     profiling["feature_mode"] = "similarity" if lr_features is not None else "embedding"
 
@@ -3695,12 +3839,21 @@ def cluster_proxy_pipeline(
             lr_input, _prebuilt_W, labeled_indices, labeled_values,
             confidence_threshold=confidence_threshold,
             alpha=diffusion_alpha, beta=propagation_beta,
-            num_iter=refine_num_iter, tol=refine_tol, patience=refine_patience,
+            num_iter=refine_num_iter, num_iter_bias=refine_t1, num_iter_prop=refine_t2,
+            tol=refine_tol, patience=refine_patience,
             imbalance_strategy=_refine_imbalance,
             lr_C=lr_C,
             base_threshold=base_threshold,
             return_logit=(str(decision_mode) == "learned_calibration"),
         )
+        _dump_dir = os.environ.get("PROBE_DUMP_REFINED_DIR")
+        if _dump_dir:
+            # Offline theta_ref study: refined scores f, the anchors, and the threshold used.
+            np.savez_compressed(os.path.join(_dump_dir, "refined_scores.npz"),
+                                scores=np.asarray(_final_scores, dtype=np.float32),
+                                labeled_indices=np.asarray(labeled_indices, dtype=np.int64),
+                                labeled_values=np.asarray(labeled_values, dtype=np.int8),
+                                threshold=float(confidence_threshold))
         refine_total = time.time() - t0
         profiling["propagation_time"] = (
             float(refine_prof.get("bias_diffusion_time", 0.0))
@@ -3795,6 +3948,8 @@ def cluster_proxy_pipeline(
                             diffusion_alpha=float(diffusion_alpha),
                             propagation_beta=float(propagation_beta),
                             refine_num_iter=int(refine_num_iter),
+                            refine_t1=refine_t1,
+                            refine_t2=refine_t2,
                             refine_tol=float(refine_tol),
                             refine_patience=int(refine_patience),
                             imbalance_strategy=_refine_imbalance,
@@ -3902,16 +4057,24 @@ def cluster_proxy_pipeline(
                 for key, value in decision.info.items():
                     profiling[f"deferral_{key}"] = value
                 positive_mask = final_pos
+            elif str(decision_mode) == "learned_calibration" and _bargain_mode() is not None:
+                # Reviewer control (Fig 10): BARGAIN on the refined score replaces calibration + routing.
+                positive_mask = _run_bargain_on_refined(
+                    _final_scores, label_fn, labeled_indices, labeled_values,
+                    seed=int(random_seed or 0), profiling=profiling)
             elif str(decision_mode) == "learned_calibration":
                 positive_mask = _run_learned_calibration_stage(
                     lr_input, _prebuilt_W, texts, label_fn,
                     labeled_indices, labeled_values, positive_mask,
                     refine_prof.get("lr_logit"),
                     config=learned_calibration_config,
+                    refined_score=_final_scores,
                     confidence_threshold=confidence_threshold,
                     diffusion_alpha=diffusion_alpha,
                     propagation_beta=propagation_beta,
                     refine_num_iter=refine_num_iter,
+                    refine_t1=refine_t1,
+                    refine_t2=refine_t2,
                     refine_tol=refine_tol,
                     refine_patience=refine_patience,
                     imbalance_strategy=_refine_imbalance,
@@ -3925,16 +4088,17 @@ def cluster_proxy_pipeline(
                 int(x) for x in refine_prof["z_corrected"].shape
             )
             refine_prof.pop("z_corrected", None)
-    elif sampling_method in _refine_methods and not refine_enabled:
+    elif sampling_method in _lr_only_methods and not refine_enabled:
         profiling.setdefault("knn_graph_build_time", 0.0)
         t0 = time.time()
         lr_fit_time = 0.0
         lr_predict_time = 0.0
         unique_classes = np.unique(labeled_values)
         if len(unique_classes) < 2:
-            positive_mask = np.full(n_total, int(unique_classes[0]) == 1, dtype=bool)
+            single_class = int(unique_classes[0]) if len(unique_classes) else None
+            positive_mask = np.full(n_total, single_class == 1, dtype=bool)
             logger.warning(
-                f"{sampling_method} LR-only: single class ({int(unique_classes[0])}) in labeled set"
+                f"{sampling_method} LR-only: observed class ({single_class}) in labeled set"
             )
         else:
             if lr_class_weight_override == "balanced":
@@ -4006,7 +4170,7 @@ def cluster_proxy_pipeline(
             profiling["prediction_time"] if cluster_proxy_mode == "weighted_lr" else 0.0
         )
     # Report the actual prediction mode that was used.
-    if sampling_method in _refine_methods and not refine_enabled:
+    if sampling_method in _lr_only_methods and not refine_enabled:
         actual_mode = "lr_only"
     elif sampling_method in _refine_methods and refine_enabled:
         actual_mode = "score_refinement"
@@ -4015,6 +4179,24 @@ def cluster_proxy_pipeline(
     profiling["mode"] = actual_mode
     profiling["vllm_invocation_time"] = vllm_time_acc[0]
     profiling["n_total"] = int(n_total)
+
+    if hasattr(raw_label_fn, "ledger"):
+        ledger = raw_label_fn.ledger
+        known = ledger.cache
+        unresolved = [i for i in range(n_total) if i not in known]
+        positives = [i for i, y in known.items() if y == 1]
+        profiling["oracle_budget"] = ledger.snapshot()
+        profiling["verified_positive_ids"] = positives
+        profiling["unresolved_ids"] = unresolved
+        profiling["quality_certificate"] = None
+        if unresolved and (not positives or ledger.failures or profiling.get("lc_status") in ("abstain", "insufficient_evidence")):
+            positive_mask = np.zeros(n_total, dtype=bool)
+            positive_mask[positives] = True
+            profiling["result_status"] = "abstain"
+        else:
+            profiling["result_status"] = "fully_verified" if not unresolved else "approximate_uncertified"
+        profiling["discovery_status"] = "positive_found" if positives else "no_positive_found" if unresolved else "verified_empty"
+        profiling["stop_reason"] = "budget_exhausted" if ledger.used >= ledger.limit else "sampling_complete"
 
     n_predicted_pos = int(np.sum(positive_mask))
     profiling["n_predicted_positive"] = n_predicted_pos

@@ -165,14 +165,28 @@ def positive_weight_diagnostics(y: np.ndarray, w: np.ndarray) -> Dict[str, Any]:
     }
 
 
-def _evidence_problem(y_a: np.ndarray, h_a: np.ndarray, h_pool: np.ndarray) -> str:
+def _l_enters_fit(x_l, h_l, y_l, lam: float) -> bool:
+    """The out-of-fold rows of L enter the loss only when they are present and weighted (lam > 0)."""
+    return (x_l is not None and h_l is not None and y_l is not None
+            and np.asarray(y_l).size > 0 and float(lam) > 0.0)
+
+
+def _evidence_problem(y_a: np.ndarray, h_a: np.ndarray, h_pool: np.ndarray,
+                      h_l: Optional[np.ndarray] = None) -> str:
+    """Why the fit is not identified, or "" when it is.
+
+    Every refined-label value that occurs in the pool must be seen by the fit, or the c*h term is not identified
+    for that group. The fit sees A and, when its term is on, the out-of-fold rows of L (pass their h as h_l).
+    """
     if y_a.size == 0:
         return "empty_calibration_sample"
     if np.unique(y_a).size < 2:
         return "single_class_in_A"
-    missing = set(np.unique(h_pool).tolist()) - set(np.unique(h_a).tolist())
-    if missing:
-        return "h_value_missing_in_A"
+    seen = set(np.unique(h_a).tolist())
+    if h_l is not None:
+        seen |= set(np.unique(np.asarray(h_l, dtype=np.float64)).tolist())
+    if set(np.unique(h_pool).tolist()) - seen:
+        return "h_value_missing_in_A_and_L"
     return ""
 
 
@@ -190,18 +204,31 @@ def calibrate(
     rho: Tuple[float, float, float, float],
     cp_lam: float = 0.0,
     cp_alpha: float = 0.05,
+    paper: bool = False,
 ) -> CalibrationFit:
     """Fit the A+L weighted Platt model, then the A-only intercept shift."""
     x_a, h_a, y_a, w_a = (np.asarray(v, dtype=np.float64).reshape(-1) for v in (x_a, h_a, y_a, w_a))
     h_pool = np.asarray(h_pool, dtype=np.float64).reshape(-1)
+    if paper:
+        # Eq. (platt): only slope/intercept and the L-only offset xi.
+        # Keep the historical parameter container with c fixed exactly to zero.
+        h_a = np.zeros_like(h_a)
+        h_pool = np.zeros_like(h_pool)
+        h_l = None if h_l is None else np.zeros_like(np.asarray(h_l, dtype=np.float64))
+        rho = (0., 0., 0., 1.)
     diagnostics: Dict[str, Any] = {"n_a": int(y_a.size), **positive_weight_diagnostics(y_a, w_a)}
-    problem = _evidence_problem(y_a, h_a, h_pool)
+    h_l_fit = h_l if _l_enters_fit(x_l, h_l, y_l, lam) else None
+    problem = _evidence_problem(y_a, h_a, h_pool, h_l_fit)
+    # which refined-label values each set holds (and their counts), to diagnose an unidentified c*h term
+    _vals = lambda v: "none" if v is None else ";".join(
+        f"{int(k)}:{int(n)}" for k, n in zip(*np.unique(np.asarray(v, dtype=np.float64), return_counts=True)))
+    diagnostics.update(h_pool_values=_vals(h_pool), h_a_values=_vals(h_a), h_l_values=_vals(h_l_fit))
     # A with no positive at all normally stops the calibration: the intercept equation
     # sum w*sigmoid(z+t) = 0 has no finite solution. With cp_lam > 0 the target becomes a
     # Clopper-Pearson mix instead of the measured 0, so the level is anchored conservatively and the
     # shape still comes from L. Without L there is nothing to give the shape, so keep refusing.
     conservative = (problem == "single_class_in_A" and cp_lam > 0.0 and float(y_a.sum()) == 0.0
-                    and x_l is not None and y_l is not None and np.asarray(y_l).sum() > 0)
+                    and _l_enters_fit(x_l, h_l, y_l, lam) and np.asarray(y_l).sum() > 0)
     if problem and not conservative:
         return CalibrationFit(None, "insufficient_evidence", problem, diagnostics)
 
@@ -212,13 +239,23 @@ def calibrate(
     diagnostics["lambda_used"] = lam_used
     diagnostics["n_l"] = 0 if l_rows is None else int(l_rows[2].size)
 
+    smooth_population = y_a if l_rows is None else np.concatenate([y_a, l_rows[2]])
+    def smooth(y):
+        n_pos = int(np.count_nonzero(smooth_population > .5))
+        n_neg = smooth_population.size - n_pos
+        return np.where(y > .5, (n_pos + 1.) / (n_pos + 2.), 1. / (n_neg + 2.))
+
+    fit_y_a = smooth(y_a) if paper else y_a
+    fit_l_rows = l_rows
+    if paper and l_rows is not None:
+        fit_l_rows = (l_rows[0], l_rows[1], smooth(l_rows[2]))
     result = minimize(
         _objective,
         x0=np.array([1.0, 0.0, 0.0, 0.0]),
-        args=((x_a, h_a, y_a, w_a), l_rows, lam_used, rho),
+        args=((x_a, h_a, fit_y_a, w_a), fit_l_rows, lam_used, rho),
         jac=True,
         method="L-BFGS-B",
-        bounds=[(0.0, None), (None, None), (None, None), (None, None)],
+        bounds=[(0.0, None), (None, None), (0., 0.) if paper else (None, None), (None, None)],
     )
     diagnostics["solver_success"] = bool(result.success)
     diagnostics["solver_message"] = str(result.message)

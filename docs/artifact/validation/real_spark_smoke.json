@@ -1,0 +1,107 @@
+{
+  "profile": "smoke",
+  "runs": [
+    {
+      "kind": "filter",
+      "N": 4,
+      "output": [
+        {
+          "id": 0,
+          "text": "a red car"
+        },
+        {
+          "id": 2,
+          "text": "a red car"
+        }
+      ],
+      "oracle": {
+        "limit": 4,
+        "candidate_attempts": 4,
+        "http_requests": 4,
+        "unique_labels": 4,
+        "failures": 0,
+        "prompt_tokens": 208,
+        "completion_tokens": 8,
+        "remaining": 0,
+        "budget_scope": "preparation",
+        "preparation_limit": 2,
+        "preparation_attempts": 1,
+        "routing_attempts": 3,
+        "routing_budget": null
+      },
+      "ce": {
+        "cache_hit": false,
+        "fingerprint": "431d9f0ae9687f0aa6634e954202cf0ad6d9367950cf4cc92640d220e16ac0ff"
+      },
+      "seconds": 15.971549059962854
+    },
+    {
+      "kind": "join",
+      "N": 4,
+      "output": [
+        {
+          "left_id": 0,
+          "left_text": "red car",
+          "right_id": 0,
+          "right_text": "automobile"
+        },
+        {
+          "left_id": 1,
+          "left_text": "blue bicycle",
+          "right_id": 1,
+          "right_text": "bicycle"
+        }
+      ],
+      "oracle": {
+        "limit": 4,
+        "candidate_attempts": 4,
+        "http_requests": 4,
+        "unique_labels": 4,
+        "failures": 0,
+        "prompt_tokens": 216,
+        "completion_tokens": 8,
+        "remaining": 0,
+        "budget_scope": "preparation",
+        "preparation_limit": 2,
+        "preparation_attempts": 1,
+        "routing_attempts": 3,
+        "routing_budget": null
+      },
+      "ce": {
+        "cache_hit": false,
+        "fingerprint": "043ebeec80a0eefc10b8421e2b371525231b4ec6f5deca19e6b656a72dc3f77e"
+      },
+      "seconds": 0.7465734980069101
+    }
+  ],
+  "source_sha256": {
+    "ce_ranker.py": "9ea31952020f9088e85c420e22cb04db92ffdd4ac50ee63130e809b49b05bbef",
+    "router_cap.py": "87111da7a1e85fba8b719af7065be3a815a253c652b49e0e983a81a950a6db8f",
+    "proxy_model.py": "9aa44bb9bc77feca023cc59828991f8ec68567bfe4d3e303b03feaa11e34796d",
+    "cs_calibration.py": "7d30c757964b83fd887a17700864f971ecb79e5783ea7ea50ac14ee41e3948cf",
+    "oracle_budget.py": "10e5c1e0b6381dd4b79a72639491603e6c220d665038960ef8cdfc1969bdd088",
+    "weighted_calibrator.py": "e6212c7640ad203377e4274b7c8a59acdd0d44d69a75e786d3bc55a15ad4d203",
+    "delegation_curves.py": "00afff323aa0292a522471827aca2b00c72352d4c550e37cb8c945205978e3fa",
+    "budgeted_calibrated_router.py": "e4529bf5e4188ed2b31c77fae2a52b63e4608b8f3e420b3b642f22650d661d15",
+    "learned_deferral.py": "f4407033e3f4a93c98863ccbd7d5ee3c15434a2ead64437831adb297bd4c62d3",
+    "label_cache.py": "02557d4bd3c02c4f1d824bd86f08372ac976d5ebe0f978cdfa342e71a19315a0",
+    "candidate_identity.py": "dbd67c1607a1c70ca45536a623b6f62c9e33947e3778c26b14f0ab444232cfd7",
+    "ce_ranker_backend.py": "6b625525c619db2982b1c4d6e46a0d0649641a3ec6931484b0a222669ba10761",
+    "gam_calibrator.py": "d12a79f6fc721ee8b81926b0103f44f5a6376cfa680d992a4e49e691052f8181",
+    "fixed_ce_sampling.py": "7b32b16015e0d5a741653fd34761fd55a4847b176d77f5d1851e0e62b9e75c05",
+    "calibration_audit.py": "3e9bfa6e8d41f7d724833a2fc588c80a8d8dc9ea60f1874ac8c1a157f48b9921",
+    "proxy_model_backends.py": "e7499c0870f3eb7c95f6f6c859038bbf924f9300899b388b45d1ddaffdb2a0bd",
+    "calibration_bounds.py": "466668c595cfc1a1c0b7db4f18ecc6648efdf7251c47124c5e05ccb8a41c55f6",
+    "sem_ops_register.py": "35307f2a7c5cfdc6d992ad9577aff32be12aa8afb7877b918a5e6ad75aadf408",
+    "cluster_proxy.py": "96462432f2e5b2ae4708139d02b6aad68497defe35e792a4f31b70dfa5c147cc",
+    "run.py": "95ffd86f135eca88ecf317cb209c203f940f4ee409441d2a5d4798fecc914f7d",
+    "bargain_refined.py": "88c1b738486adcdbe8b4066afab85793d20d6465b55411846018cf59b79a8066",
+    "stratified_calibration.py": "64fd55b0e41b1fb73b91ed1db837acc9bab71d0833e0c65bd02a983c0c74bc5a",
+    "threshold_search_multi.py": "0dcd2523700c37242fb363362ecbb54cfc98d58a4490d68b7121719efe04b79f",
+    "sampling_strata.py": "e2e3bb2f97acdf81517426882c7f4c23ca09ad56b4f0d2ebf74bca74f072fddf",
+    "learned_calibration.py": "8008894084d8939a60c6ef9bddd7e03470b358609fcf4909e3913de21c90da11",
+    "fixed_ce_config.py": "e8b866ce75873ccd975cfaad8100c382afd7e249122cb751a738df19f1341071",
+    "experiments/smoke.py": "0b6e98c9987f459a4bde0357f336c8fc3581ddf30c5b11e6516dcc4d5e36b654"
+  },
+  "scope": "Real CE and Gemma expert, text fixtures, public Spark filter/join and S3. No population-quality or timing comparison claim."
+}

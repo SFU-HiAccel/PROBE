@@ -1,0 +1,72 @@
+[
+  {
+    "experiment": "main",
+    "jobs": 490,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "sweep",
+    "jobs": 434,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "sampling",
+    "jobs": 56,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "refinement",
+    "jobs": 42,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "calibration",
+    "jobs": 504,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "representation",
+    "jobs": 56,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "experts",
+    "jobs": 70,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "timing",
+    "jobs": 14,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "low_selectivity",
+    "jobs": 21,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  },
+  {
+    "experiment": "trace",
+    "jobs": 1,
+    "profile": "paper",
+    "started_spark": false,
+    "called_oracle": false
+  }
+]

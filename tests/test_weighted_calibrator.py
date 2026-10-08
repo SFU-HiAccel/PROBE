@@ -92,7 +92,24 @@ class TestCalibrate:
         x, _, y = _world(50, seed=7)
         fit = calibrate(x_a=x, h_a=np.zeros(50), y_a=y, w_a=np.ones(50), x_l=None, h_l=None, y_l=None,
                         h_pool=np.array([0.0, 1.0]), lam=0.25, rho=NO_RIDGE)
-        assert fit.reason == "h_value_missing_in_A"
+        assert fit.reason == "h_value_missing_in_A_and_L"
+
+    def test_refined_label_value_seen_only_in_L_is_enough(self):
+        # A holds only h = 0, but L's out-of-fold rows carry h = 1 and enter the fit: the c*h term is identified
+        x, _, y = _world(50, seed=7)
+        xl, hl, yl = _world(40, seed=8)
+        hl = np.r_[np.ones(10), np.zeros(30)]
+        fit = calibrate(x_a=x, h_a=np.zeros(50), y_a=y, w_a=np.ones(50), x_l=xl, h_l=hl, y_l=yl,
+                        h_pool=np.array([0.0, 1.0]), lam=0.25, rho=NO_RIDGE)
+        assert fit.status == "ok"
+
+    def test_l_does_not_count_when_its_term_is_off(self):
+        # with lam = 0 the L rows do not enter the loss, so they cannot identify c
+        x, _, y = _world(50, seed=7)
+        xl, _, yl = _world(40, seed=8)
+        fit = calibrate(x_a=x, h_a=np.zeros(50), y_a=y, w_a=np.ones(50), x_l=xl, h_l=np.ones(40), y_l=yl,
+                        h_pool=np.array([0.0, 1.0]), lam=0.0, rho=NO_RIDGE)
+        assert fit.reason == "h_value_missing_in_A_and_L"
 
 
 class TestPositiveWeightDiagnostics:

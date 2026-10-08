@@ -27,8 +27,8 @@ def test_existing_labels_keep_their_decision_modes():
     assert run._decision_mode_for_ablation("activeSampling+lr_only") == "none"
 
 
-def test_default_grid_does_not_enable_learned_calibration():
-    assert all(run._decision_mode_for_ablation(label) != "learned_calibration"
+def test_default_grid_enables_paper_calibration():
+    assert all(run._decision_mode_for_ablation(label) == "learned_calibration"
                for label, _, _ in run.ABLATION_CONFIGS)
 
 
@@ -45,7 +45,7 @@ def test_config_uses_total_budget_semantics(monkeypatch):
     monkeypatch.setattr(run, "LC_CALIB_FRAC", 0.1)
     monkeypatch.setattr(run, "RANDOM_SEED", 7)
     cfg = run._learned_calibration_config(10000, 5)
-    assert (cfg.total_budget, cfg.sample_budget, cfg.calib_budget, cfg.seed) == (500, 300, 50, 7)
+    assert (cfg.total_budget, cfg.sample_budget, cfg.calib_budget, cfg.seed) == (500, 400, 100, 7)
 
 
 def test_existing_budget_split_is_untouched():
@@ -57,3 +57,64 @@ def test_experiment_runners_pass_the_config(fn_name):
     src = inspect.getsource(getattr(run, fn_name))
     assert "learned_calibration_config=_lc_cfg" in src
     assert "_learned_calibration_config(" in src
+
+
+def test_default_routing_is_outside_preparation_budget():
+    """B pays for L, A and D; routing has a finite default allowance."""
+    cfg = run._learned_calibration_config(10000, 10)
+    assert (cfg.total_budget, cfg.sample_budget, cfg.calib_budget) == (1000, 800, 200)
+    assert cfg.route_frac == 0.0 and cfg.route_budget == 0
+    assert cfg.route_unlimited is True and cfg.route_budget_mult == 0.0
+    # The quality dial does not override the cap.
+    assert 0.0 < cfg.alpha < 1.0
+
+
+def test_default_routing_can_exceed_preparation_b():
+    """A high quality dial still obeys the run.py budget cap."""
+    import numpy as np
+    from learned_calibration import OofFeatures, run_learned_calibration
+
+    rng = np.random.default_rng(0)
+    n = 2000
+    y_true = (rng.random(n) < 0.2).astype(int)
+    x = np.where(y_true == 1, 1.0, -1.0) + rng.normal(0, 1.5, n)   # a weak proxy: much to route
+    h = (x > 0).astype(float)
+    cfg = run._learned_calibration_config(n, 5)
+    cfg = type(cfg)(**{**cfg.__dict__, "alpha": 0.95})
+    l_idx = rng.choice(n, cfg.sample_budget, replace=False)
+    res = run_learned_calibration(
+        x=x, h=h, labeled_indices=l_idx, labeled_values=y_true[l_idx], oof=OofFeatures(None, None, "n/a"),
+        label_rows=lambda rows: y_true[rows], config=cfg)
+    assert res.status.startswith("routed")
+    assert res.diagnostics["lc_calls_total"] > cfg.total_budget
+    assert res.diagnostics["lc_calls_L"] + res.diagnostics["lc_calls_A"] <= cfg.total_budget
+
+
+def test_n_phases_env_override(monkeypatch):
+    """LASO_N_PHASES sets the active-learning round count T."""
+    monkeypatch.setenv("LASO_N_PHASES", "7")
+    run._laso_env_overrides()
+    assert run.ACTIVESAMPLING_N_PHASES == 7
+
+
+def test_lc_phases_reports_the_effective_value():
+    """In calibration mode T is clipped by the sample budget; the clipped value is what runs."""
+    saved = run.ACTIVESAMPLING_N_PHASES
+    try:
+        run.ACTIVESAMPLING_N_PHASES = 9
+        assert run._lc_phases(300) == 9        # budget//3 = 100, no clipping
+        assert run._lc_phases(12) == 4         # budget//3 = 4, clipped below the requested 9
+        assert run._lc_phases(1) == 1          # never below one round
+    finally:
+        run.ACTIVESAMPLING_N_PHASES = saved
+
+
+def test_effective_phases_reads_the_sampler_profile():
+    """The row must report the rounds the sampler ran, which live in its own profile dict."""
+    assert run._effective_phases({"activeSampling_profiling": {"n_phases": 3}}) == 3
+    # no sampler profile (e.g. a non-activeSampling ablation): fall back to the configured value
+    assert run._effective_phases({}) == run.ACTIVESAMPLING_N_PHASES
+
+
+def test_fixed_ce_reports_no_reranking_rounds():
+    assert run._effective_phases({"activeSampling_profiling": {"sampler": "fixed_ce_pilot"}}) == 0
