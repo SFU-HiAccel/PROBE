@@ -1,0 +1,174 @@
+{
+  "observed_at_utc": "2026-10-08T18:21:23.780252+00:00",
+  "source_worktree": "../PROBE-VLDB",
+  "source_head": "e2325c6245146a4ef8a5c8308507403859bf182a",
+  "source_is_dirty": true,
+  "authority": "Current worktree bytes, including staged and unstaged edits; HEAD alone does not identify this manuscript.",
+  "appendix_status": "sections/09_appendix.tex exists but its input is commented out in main.tex. Audit separately from the active manuscript.",
+  "files": {
+    "main.tex": {
+      "sha256": "e51e133c2efea730b6503e3b05c785cfb9f2af50842fdbec10d0ff7097374d3d",
+      "bytes": 6830
+    },
+    "sample.bib": {
+      "sha256": "6251532d34aebf712af8376062ea14dd26af61ba131da1d6b07a1443272af979",
+      "bytes": 37719
+    },
+    "sections/00_abstract.tex": {
+      "sha256": "916e521ece436796a8d8658e3a261df497efa7dae0617146062de113e57d7749",
+      "bytes": 1431
+    },
+    "sections/01_introduction.tex": {
+      "sha256": "a9ac71a3c550fdfddf967ae0f4eb8efbb18f31abcf73750e7b1af83175433b83",
+      "bytes": 15418
+    },
+    "sections/02_background.tex": {
+      "sha256": "3b3984ecad6b6c3e6addc2620b237aaeb3c4900a79f43d42feee1b5b172917a7",
+      "bytes": 4164
+    },
+    "sections/03_sampling.tex": {
+      "sha256": "a6dfb5bc2a1aba3478c00f46739c4a2548ebdadf17b8cc7436f4f2877df7ac36",
+      "bytes": 22176
+    },
+    "sections/04_label_propagation.tex": {
+      "sha256": "05936f8b471e3c67f00afd648604a155377320a0716e3f29728349b88f0b6028",
+      "bytes": 7447
+    },
+    "sections/05_learned_guided_fallback.tex": {
+      "sha256": "ba9363ae99b566dfd76dfc457e206b98d4c0067007caa105c5ef64be31779408",
+      "bytes": 13319
+    },
+    "sections/06_evaluation.tex": {
+      "sha256": "2cb425f716a5c4caa72cf2f8073623ed4584da8cf15de62b7a17d7c68db8f638",
+      "bytes": 20828
+    },
+    "sections/07_related_work.tex": {
+      "sha256": "ef6f86b0a30d8c39a0af7e4ff59311f596a68a39c5b2bf5d319138358ef47535",
+      "bytes": 3085
+    },
+    "sections/08_conclusion.tex": {
+      "sha256": "721f6d251f6a9e4e9f12c9727ec61ae78b053b8106d964b827d9b38bb0cfae19",
+      "bytes": 527
+    },
+    "sections/09_appendix.tex": {
+      "sha256": "b4ef085a749cc977fab87374986b4f2099446181012a25709f3b24ea4d306d22",
+      "bytes": 15244
+    },
+    "figures/sas_flow.tex": {
+      "sha256": "72d36c2ea688e93a364a2d177d27c55a620d7d7a7eddf641fbfe668c72ffd9d8",
+      "bytes": 3170
+    },
+    "tables/best_points.tex": {
+      "sha256": "7e75970c58b96e4013139239001929cf2c51db412622bc7719168a877c782a0e",
+      "bytes": 4954
+    },
+    "figures/Algo3.pdf": {
+      "sha256": "f49ce6878d3677c8ababca5d79bf8000d5874b6cfe7d49dcfc78ec510046840f",
+      "bytes": 285471
+    },
+    "figures/Graph.pdf": {
+      "sha256": "459b9b88d2bc06a67d6a82f83d2438510eda792c2c17d61bc5352c7a59744a14",
+      "bytes": 285539
+    },
+    "figures/SamplingStage.pdf": {
+      "sha256": "e6407a8519df9640468d3420dfbb5af25744db62fbd5b036fa9c549dc061abc0",
+      "bytes": 189826
+    },
+    "figures/all_queries.pdf": {
+      "sha256": "1a12cd98dbfe96714884fe7746e0c37195b157e8873f29681c9a4dc8e9337fe5",
+      "bytes": 50789
+    },
+    "figures/alpha_tradeoff.pdf": {
+      "sha256": "1fec91d9373c388ad0a0bbdd8ec4effb7835a51ad1c7daab68c24697f6454a11",
+      "bytes": 17470
+    },
+    "figures/calib_gamcal_case.pdf": {
+      "sha256": "70119a83589f6ca17fbaecbb82c59a04b974a238ac8d753f5f6655da08c114bd",
+      "bytes": 18497
+    },
+    "figures/encoder_rank_intervals.pdf": {
+      "sha256": "a295a05290d49e09e11857d0f6673386f0e0ddc49bdf45a78ffe989e5baf011e",
+      "bytes": 55585
+    },
+    "figures/est_vs_actual.pdf": {
+      "sha256": "8fe8560b209e31e1c2f3730543002d40a3f62e1561f542a979a79662ca8671c1",
+      "bytes": 690962
+    },
+    "figures/fig_mllm_quality.pdf": {
+      "sha256": "9a2a99baa7a4f92ca299baa0f32967b85b8eae4465546feb0dfa4d31b76c0357",
+      "bytes": 658047
+    },
+    "figures/fig_mllm_speedup.pdf": {
+      "sha256": "5002d2581040744ea35f568b41f5a249ae2f6f90bbd092304e8a9d5897aa29a4",
+      "bytes": 666020
+    },
+    "figures/fig_model_generalization.pdf": {
+      "sha256": "0e801688f22f45597a5b981f1645cb4ea220b67c5de4a977b3659e3eebfceb9c",
+      "bytes": 18213
+    },
+    "figures/fig_sys_latency.pdf": {
+      "sha256": "3b9943ade849a9eab9d23b56e3dc57291c327210e5ac3338e71b17427895ae0c",
+      "bytes": 58544
+    },
+    "figures/fig_sys_latency_gemma4.pdf": {
+      "sha256": "d286c07c2f1f1a10e4265f6919adfd24f136c3187d17ef2024c339589d3f917d",
+      "bytes": 52300
+    },
+    "figures/fig_sys_quality.pdf": {
+      "sha256": "7377f8a01aad2ff76a5c08f10f8a28e910ee85e6e282dc30fc567b202801b900",
+      "bytes": 56240
+    },
+    "figures/fig_sys_quality_gemma4.pdf": {
+      "sha256": "84510cdc445df055083193a0472c53ba4826624098072c4b898ab276c7d26cd3",
+      "bytes": 52169
+    },
+    "figures/fig_sys_speedup.pdf": {
+      "sha256": "50a25ea1f582d3492766717d9c54cb42b2204f9a8249ebd0098d0938e0e8c26a",
+      "bytes": 52231
+    },
+    "figures/fig_time_breakdown.pdf": {
+      "sha256": "83d36365350583abc4dacb945bec30808c89735a8d08e9e94027e3a24a7e315a",
+      "bytes": 26980
+    },
+    "figures/graph_ablation.pdf": {
+      "sha256": "ec6ffc3a14ad493c34a63414f51cc51da669795fbdd622a53f6c1fedbe5db4cb",
+      "bytes": 58261
+    },
+    "figures/hparam_all_mean.pdf": {
+      "sha256": "bdef99386bbc10574067c2d16b02cb3ba49520145f12cea5d2740177fcd7eac4",
+      "bytes": 37175
+    },
+    "figures/lowsel_tradeoff.pdf": {
+      "sha256": "a8092c58fd983d1062de445b8351c51ffaa8d9510f20a868684749a68b636efd",
+      "bytes": 30176
+    },
+    "figures/repr_models.pdf": {
+      "sha256": "0770243a6a7c5e0cbef226274aa96bbea13665273bab63406ab34f772a8ae540",
+      "bytes": 13243
+    },
+    "figures/sampling_ablation.pdf": {
+      "sha256": "f6e298b98f210c6a041df3ad47cd81ae9cdbabfd4354e1792aece5d54d7d94b5",
+      "bytes": 58959
+    },
+    "figures/sampling_ablation_ci.pdf": {
+      "sha256": "430e69796fd90589be2c5781a8e76ce32efa26b01041f625617850e38d12b75f",
+      "bytes": 60448
+    },
+    "figures/sampling_knockout_ci.pdf": {
+      "sha256": "e9a576e90640bc8d36fd3bcc6c0b23ce5f32276bfd01b13ccc8133ad72f6abcb",
+      "bytes": 58380
+    },
+    "figures/sas_windows_by_round.pdf": {
+      "sha256": "57ca029202ef9c4c466e44e006f69a017560f7b01656c7855cc8607e13ab6964",
+      "bytes": 169423
+    },
+    "figures/workflow.pdf": {
+      "sha256": "79b3f426b4f10dd549579037c5b1d64d305d2baec69a61abed7eb962aa2a39be",
+      "bytes": 436285
+    },
+    "tables/case_study.tex": {
+      "sha256": "b83b57e1610582fe01d77a84766a72c7ae38b1868b68dfa9969c8eec3bee778a",
+      "bytes": 742
+    }
+  }
+}
