@@ -170,5 +170,13 @@
       "sha256": "b83b57e1610582fe01d77a84766a72c7ae38b1868b68dfa9969c8eec3bee778a",
       "bytes": 742
     }
+  },
+  "latest_verification": {
+    "verified_at_utc": "2026-10-08T18:26:35.839890+00:00",
+    "source_head": "e2325c6245146a4ef8a5c8308507403859bf182a",
+    "source_is_dirty": true,
+    "hashed_files_checked": 41,
+    "content_changed_since_snapshot": false,
+    "note": "Manuscript HEAD advanced since initial capture. All recorded source and figure/table hashes still match current worktree bytes."
   }
 }
