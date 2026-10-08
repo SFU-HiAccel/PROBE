@@ -1,6 +1,6 @@
 # Algorithm alignment
 
-Authority: manuscript worktree at `a48d421`, with 41 input hashes in `manuscript_snapshot.json`. The disabled appendix is separate. Since `815f9fb`, evaluation prose, the best-point table and tradeoff PDF changed; algorithm formulas did not.
+Authority: manuscript worktree at `c5b2d86`, with 41 input hashes in `manuscript_snapshot.json`. The disabled appendix is separate. Since `815f9fb`, evaluation prose, the best-point table and tradeoff PDF changed; algorithm formulas did not.
 
 | Paper requirement | Effective implementation | Change/evidence |
 | --- | --- | --- |

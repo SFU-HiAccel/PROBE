@@ -1,28 +1,95 @@
 # Experiment alignment and evidence gaps
 
-`experiments/paper_manifest.json` is the machine-readable authority for active labels, full candidate universes, models/revisions, budgets, seeds, baseline protocols, command plans and evidence state. The manuscript snapshot is `a48d421`. No historical run has been promoted into current-protocol raw evidence.
+`experiments/paper_manifest.json` defines the active grids, candidate universes,
+budgets, seeds and benchmark metrics. `manuscript_snapshot.json` identifies the
+manuscript bytes by source hashes. All ten families now execute through `run.py`;
+`--dry-run` only previews their configurations. Execution support and completed
+numerical reproduction are separate evidence states.
 
-| Active label | Named command (`python experiments/reproduce.py --experiment NAME --dry-run`) | State and next evidence |
-| --- | --- | --- |
-| fig:sys-f1, fig:sys-latency | main | Five seeds0..4,14 queries, B10/alpha.5 or target.9. New PROBE/no-proxy/BARGAIN executable wiring exists; complete grid and controlled timing missing. AIQA/CSV/LOTUS/ScaleDoc integrations require audit. |
-| fig:sys-tradeoff, tab:main-comparison | sweep | Budget5/10/15/20/25, targets.1/.3/.5/.7/.9. Full same-universe runs missing. Quality-first minimizes delegation at max quality; cost-first requires90% model-matched no-proxy quality, with EcommQ9 closest-point exception. No manual point insertion. |
-| fig:ablation sampling | sampling | SAS/uniform/Neyman-stratified/top-K share CE features and balanced LR. Formal execution blocked until B_L and zero-class behavior are reconciled consistently across arms; public LR-only contracts are tested. |
-| fig:ablation refinement | refinement | Requires one frozen SAS label set and proxy across LR/bias/full. Independent stochastic runs cannot certify this. A dedicated frozen-L executor is missing. |
-| fig:alpha-tradeoff | calibration | Platt/GAM/none, alpha0/.1/.3/.5/.7/.9/1. Current workbook Fig9_Alpha has13 queries, mixed seed0/1, edited aggregate cells, and an older no-calibration description. Do not certify it as complete14-query raw evidence. BARGAIN-A/P/R use separate target grids. |
-| fig:repr-models | representation | Qwen CE/Jina CE/SigLIP/CLIP-base must change both axis and features. Model backend helpers exist; formal arm wiring/provenance remains unaudited. |
-| fig:mllm-generalization | experts | Four separate model-matched expert/no-proxy pairs; immutable model revisions and archived server settings needed. The runner does not replace a live server. |
-| fig:time-stack | timing | Paper requires seven measured stages. Existing four-phase accounting overlaps oracle/client phases; cannot certify this panel until reconciled. Delegation-scaled latency is excluded. |
-| tab:lowsel-results | low_selectivity | CarsQ4 N157269, EcommQ6 N9280, MovieQ5 N65024, B10/25. Full measured records and ScaleDoc adapter pending; reject alternate research scale factors. |
-| fig:encoder-rank, fig:sas-multi-process | trace | EcommQ9 N25440; figure-only batch300 distinct from batch32 default. Dedicated trace export/plot audit pending. |
+| Active label | `--experiment` | Implemented execution | Remaining evidence |
+| --- | --- | --- | --- |
+| fig:sys-f1, fig:sys-latency | main | 14 queries, five seeds, seven systems; actual model calls and benchmark scoring | Complete grids and controlled model-matched timing |
+| fig:sys-tradeoff, tab:main-comparison | sweep | Budget 5/10/15/20/25%; target 0.1/0.3/0.5/0.7/0.9; BARGAIN uses fixed B10 proxy preparation | Full grids and paper quality-first/cost-first table reconstruction |
+| fig:ablation (sampling) | sampling | SAS/uniform/Neyman/top-K, same CE features and balanced LR; 80% of each preparation budget; no graph/calibration/routing | Complete 14-query budget curves |
+| fig:ablation (refinement) | refinement | One locked, hashed acquisition of actual SAS expert labels per input/model/seed/budget; LR/bias/full reuse it | Complete curves; shared acquisition identity checked in each measured group |
+| fig:alpha-tradeoff | calibration | Platt/GAM/none, seven alpha values; BARGAIN-A/P/R with separate target points | Full grids and ECE evaluation on independently labeled evaluation data |
+| fig:repr-models | representation | Pinned Qwen/Jina CE and SigLIP/CLIP; ordering and proxy/graph features both change | Complete representation comparisons |
+| fig:mllm-generalization | experts | Explicit four model bindings; each PROBE arm has a model-matched no-proxy reference | Three additional expert servers and full four-model grids |
+| fig:time-stack | timing | Exclusive wall-clock timers for embedding, sampling, expert calls, training, prediction, refinement and calibration; separate client/Spark overhead | Complete controlled timing panel |
+| tab:lowsel-results | low_selectivity | Cars Q4 N157269, Ecomm Q6 N9280, Movie Q5 N65024, B10/25; all selected baselines | Full measured case-study grids |
+| fig:encoder-rank, fig:sas-multi-process | trace | Ecomm Q9 N25440, batch300; exports actual scores/order and sampling events | Full trace run and exact figure-layout reconstruction |
 
-Formal dry-runs are available for every named experiment. A plan is not proof of an executable or completed experiment. Unsupported arms stop before oracle calls. Reporting writes missing query/system coverage and refuses complete-paper plotting from partial inputs. Current generic diagnostic plotting is not a substitute for audited paper figure generators.
+The runner verifies advertised endpoint model IDs, requires immutable revisions,
+excludes weight downloads from timing, isolates client caches and preserves raw
+outputs. Served revision declarations still require independently archived server
+metadata to attest the actual loaded weights. Single-class training uses a constant prediction in ablations whose routing is
+disabled. This under-specified boundary policy is explicit in the manifest and
+metadata; `--ablation-single-class oracle` selects a separate S3 variant. Full
+PROBE execution retains S3 fallback. Routing and fallback requests
+are additional to the PROBE preparation allowance. BARGAIN-P/R use allowance N
+for the current manuscript's unlimited-budget comparisons.
 
-## Provenance observations
+## Baseline adapters
 
-The source workbook `../PROBE-VLDB/data/latest_paper_data.xlsx` defines the current presentation, not the experimental facts. Its Fig9_Alpha description excludes CarsQ8, substitutes EcommQ13 seed1 for seed0 and contains edited string/aggregate cells. Its `T2_Latency_Simulation` sheet and historical figure scripts include estimated quantities. Those values cannot certify measured end-to-end latency. `experiment_sources.json` records the workbook hash and the exact source descriptions audited without copying them into new raw runs.
+Every baseline receives the same candidate IDs, expert messages, expert endpoint
+and binary-answer transport. Human GT is used only by the benchmark scorer.
 
-The active paper's default geometric-mean claims are PROBE/no-proxy F1 .762/.797, PROBE delegation .128, speedup4.88; baseline F1 .530/.628/.484 and median delegation .81/.21/.80. Each is listed as unverified raw evidence in the manifest. The latest cost-first prose now uses44.0s/4.9x; these are also unverified. No raw value is synthesized to meet a paper number.
+- AIQA uses the existing UQE active sampler: uniform initial batch, logistic
+  regression, decaying exploration; batch16, initial exploration1, decay0.9.
+  Training purchases B% labels. Its final LR uses the established unbalanced UQE
+  policy. One-class training predicts the observed class without buying further
+  labels, preserving the sampling-only budget.
+- CSV implements equal-vote recursion with k-means4 initially and2 on reclustering,
+  B% per-cluster samples and 90% consensus. Adapter choices not specified in the
+  manuscript are explicit: at least one sample per nonempty cluster, at most three
+  levels, then expert evaluation of unresolved rows. Purchased labels are retained.
+- LOTUS makes actual Qwen3-VL-2B helper calls, archives token log-probabilities,
+  calibrates them by quantiles and calls the upstream 1.1.3 importance sampler and
+  threshold learner. Those algorithm bodies/defaults are vendored under Apache-2.0
+  with exact source provenance. Package imports and logging are adapted. The
+  binary convention, calibration replacement sampling, IS weight0.9, quantiles50
+  and sample-range default200 follow that upstream helper. Proxy and expert
+  requests are recorded separately. Known calibration labels override proxy
+  guesses; no GT population labels enter the threshold learner.
+- ScaleDoc imports the actual encoder, loss, augmentation and threshold helpers
+  from an explicitly supplied upstream checkout (validated source revision
+  `33d6e815a84f9ac295336d6ece97f66adab5fa51`). Training/calibration each purchase
+  floor(5% N) expert labels, with disjoint IDs. The adapter uses the upstream
+  50/30-epoch phases, Adam parameters, best phase1 checkpoint and final phase2
+  weights. Upstream active augmentation duplicates with zero noise. The local
+  calibration allocation uses a fixed total and largest remainder over64 bins,
+  includes the final edge and retains known labels. These allocation/retention
+  adaptations are recorded explicitly. Insufficient training classes or invalid
+  training checkpoints invoke a reported full-expert fallback.
+- AIQA/CSV/ScaleDoc use frozen E5 for text and CLIP for multimodal data. Native
+  Transformers inference avoids the incompatible full LOTUS/SentenceTransformer
+  dependency combination. Text uses E5 prefixes and attention-masked mean pooling;
+  CLIP uses its pretrained projections. Available text/image and join-side vectors
+  are normalized and averaged, with strict image decoding. These feature choices
+  are implementation settings where the manuscript does not specify a checkpoint.
+- BARGAIN imports the vendored implementation and replaces only PROBE calibration
+  and routing, retaining the actual refined scores and shared expert-label cache.
 
-Main quality requires five actual seeds for each exact variant and query. A single seed, 13-query subset, alternative candidate scale, GT replay, or variance from another variant is not interchangeable. Semantic-set scores and Animals count-derived quality remain explicitly named, distinct from binary candidate F1 and calibration against the expert. Missing queries remain missing; zeros are retained in geometric means.
+These settings are exposed by source hashes and per-run metadata. They are not a
+claim that unspecified historical baseline hyperparameters have been recovered.
 
-The appendix input is disabled. Historical sensitivity/GAMCAL/report scripts are retained with historical identity and are not part of active acceptance. Missing original SemBench vendor revision, complete input checksums and expert server weight revision remain release provenance gaps. Large/full-grid reruns need those prerequisites and audited adapters before they can be claimed reproducible.
+## Workload and provenance
+
+The old `match202` entry incorrectly evaluated restaurant matching in zip60642
+(270 candidates). It now follows the benchmark's high-rated movie query: IMDb
+rating>8.3, Rotten Tomatoes rating>8.5, 24x16=384 candidates, three reference pairs.
+See the [official LRO-Bench metadata](https://github.com/LROBench/LROBench/blob/main/match_metadata.json).
+Candidate-count checks occur before expert calls, including no-proxy runs.
+
+Main quality requires five actual seeds per exact variant/query. A subset, another
+candidate universe, GT replay or borrowed variance cannot substitute for that
+coverage. Animals count-derived quality and Movie semantic-set quality remain
+explicit metric identities. Reporting rejects duplicate seeds and corrupt outputs,
+retains zero geometric means and reports missing configurations.
+
+The paper's numeric claims remain unverified raw evidence in the manifest. Historical
+workbook cells and simulated latency are not promoted into measured runs. Exact
+paper-layout figure/table reconstruction, complete input checksums, the original
+SemBench vendor revision and independently attested live-server weights remain gaps.
+The appendix input is disabled; historical appendix/sensitivity scripts are outside
+these active grids. See `validation.md` for tests and limited real-model evidence.

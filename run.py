@@ -105,7 +105,7 @@ QUERY_MODALITY: dict = {
     "match121":   "text",        # supplier name   ↔ supplier name (case/format drift)
     "match122":   "text",        # staff self-join — same first name, different person
     "match125":   "text",        # merchant category ↔ RM-MR category
-    "match202":   "text",        # yelp row        ↔ zomato row (entity match 60642)
+    "match202":   "text",        # imdb row        ↔ rotten_tomatoes row (high ratings)
     "match203":   "text",        # imdb row        ↔ rotten_tomatoes row (low ratings)
     "match305":   "text",        # frpm col        ↔ schools col (schema match)
 }
@@ -1611,6 +1611,19 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
     profiling = get_last_profiling()
     cluster_prof = profiling.get("cluster_profiling", {}) or {}
     refine_prof = cluster_prof.get("refinement_profiling", {}) or {}
+
+    paper_stages = cluster_prof.get("paper_stage_seconds")
+    if paper_stages is not None:
+        paper_stages = dict(paper_stages)
+        paper_stages["embedding"] = float(profiling.get("embedding_time", 0.)) + float(profiling.get("ce_time", 0.)) + float(profiling.get("pair_feature_time", 0.))
+        stage_total = sum(paper_stages.values())
+        overhead = duration - stage_total
+        if overhead < -max(.1, .01*duration):
+            raise ValueError("Paper stage timers overlap measured end-to-end duration")
+        Path(f"{results_dir}{tag}_paper_timing.json").write_text(json.dumps(dict(
+            stages=paper_stages, measured_stage_sum_s=stage_total, measured_end_to_end_s=duration,
+            client_and_spark_overhead_s=max(0.,overhead),
+            scope="Seven exclusive pipeline categories; Spark/data/result overhead shown separately; no inferred stage latency"),indent=2)+"\n")
 
     # ---- 4-phase breakdown that sums to End-to-End duration ----
     #
@@ -3692,44 +3705,39 @@ Category B: {right_Category}"""
 
 
 def run_match202():
+    """LRO-Bench 202: high-rated movies, 24 x 16 = 384 candidates."""
     sp = get_spark()
-    yelp = (
+    imdb = (
         sp.read.option("header", "true").option("multiLine", "true")
         .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/restaurants2/yelp.csv")
+        .csv(f"{LROBENCH_DATABASES_DIR}/movies/imdb.csv")
     )
-    yelp = yelp.filter(col("zip") == 60642)
-    left_df = yelp.select(
-        col("ID").cast("int").alias("left_ID"),
-        col("name").alias("left_name"),
-        col("address").alias("left_address"),
-        col("phone").alias("left_phone"),
-        col("cuisine").alias("left_cuisine"),
+    imdb = imdb.filter(col("Rating").cast("double") > 8.3)
+    left_df = imdb.select(
+        col("ID").alias("left_ID"),
+        col("Title").alias("left_Title"),
+        col("Year").alias("left_Year"),
+        col("Director").alias("left_Director"),
+        col("Genre").alias("left_Genre"),
     )
-
-    zomato = (
+    tomato = (
         sp.read.option("header", "true").option("multiLine", "true")
         .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/restaurants2/zomato.csv")
+        .csv(f"{LROBENCH_DATABASES_DIR}/movies/rotten_tomatoes.csv")
     )
-    zomato = zomato.filter(col("zip") == 60642)
-    right_df = zomato.select(
-        col("ID").cast("int").alias("right_ID"),
-        col("name").alias("right_name"),
-        col("address").alias("right_address"),
-        col("phone").alias("right_phone"),
-        col("cuisine").alias("right_cuisine"),
+    tomato = tomato.filter(col("Rating").cast("double") > 8.5)
+    right_df = tomato.select(
+        col("ID").alias("right_ID"),
+        col("Title").alias("right_Title"),
+        col("Year").alias("right_Year"),
+        col("Director").alias("right_Director"),
+        col("Genre").alias("right_Genre"),
     )
+    prompt = """Determine whether the two records refer to the same movie (same film, identified by matching title + year + director even if formatting differs).
 
-    prompt = """Determine whether the two restaurant records refer to the same real-world restaurant (same establishment at the same address).
-
-Yelp: name={left_name} | address={left_address} | phone={left_phone} | cuisine={left_cuisine}
-Zomato: name={right_name} | address={right_address} | phone={right_phone} | cuisine={right_cuisine}"""
-
-    truth = [
-        (2, 844), (72, 1020), (90, 744), (111, 564),
-        (198, 1022), (275, 272), (333, 134), (418, 590),
-    ]
+IMDb: title={left_Title} | year={left_Year} | director={left_Director} | genre={left_Genre}
+Rotten Tomatoes: title={right_Title} | year={right_Year} | director={right_Director} | genre={right_Genre}"""
+    truth = [('a-456', 'b-434'), ('a-569', 'b-534'), ('a-701', 'b-653')]
     gt_path = _write_match_gt_csv("match202", truth)
     _run_match_join("match202", left_df, right_df, prompt, gt_path,
                     "left_ID", "right_ID")

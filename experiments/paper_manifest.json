@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "paper_revision": "a48d421c127ffe8d802644fecfd2b966dd494ee0",
+  "paper_revision": "c5b2d862939ef4e8ee5b90be9fee9540602a4268",
   "protocol": {
     "identity": "paper",
     "sampling": {
@@ -60,7 +60,8 @@
       "alpha": 0.5,
       "objective": "alpha*(1-estimated F1)+(1-alpha)*delegation",
       "search": "dual prefixes + Dinkelbach"
-    }
+    },
+    "ablation_single_class": "constant"
   },
   "workloads": {
     "mmqa_q2a": {
@@ -212,17 +213,17 @@
       ],
       "executors": {
         "PROBE": "run.py",
-        "AIQA": null,
-        "CSV": null,
-        "LOTUS": null,
+        "AIQA": "run.py",
+        "CSV": "run.py",
+        "LOTUS": "run.py",
         "BARGAIN-A": "run.py",
-        "ScaleDoc": null,
+        "ScaleDoc": "run.py",
         "no_proxy": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment main --dry-run",
+      "command": "python experiments/reproduce.py --experiment main",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "CSV, LOTUS, ScaleDoc adapters require a current-protocol integration audit; AIQA representation is unspecified by active body.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -295,17 +296,17 @@
       ],
       "executors": {
         "PROBE": "run.py",
-        "AIQA": null,
-        "CSV": null,
-        "LOTUS": null,
+        "AIQA": "run.py",
+        "CSV": "run.py",
+        "LOTUS": "run.py",
         "BARGAIN-A": "run.py",
-        "ScaleDoc": null,
+        "ScaleDoc": "run.py",
         "no_proxy": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment sweep --dry-run",
+      "command": "python experiments/reproduce.py --experiment sweep",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Best-point selection requires complete same-universe sweeps and model-matched no-proxy.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -344,6 +345,34 @@
       "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
       "points": [
         {
+          "budget_pct": 5,
+          "sampler": "activeSampling",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 5,
+          "sampler": "random",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 5,
+          "sampler": "stratified",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 5,
+          "sampler": "top_k",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
           "budget_pct": 10,
           "sampler": "activeSampling",
           "refine": false,
@@ -370,15 +399,99 @@
           "refine": false,
           "calibration": false,
           "routing": false
+        },
+        {
+          "budget_pct": 15,
+          "sampler": "activeSampling",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 15,
+          "sampler": "random",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 15,
+          "sampler": "stratified",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 15,
+          "sampler": "top_k",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 20,
+          "sampler": "activeSampling",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 20,
+          "sampler": "random",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 20,
+          "sampler": "stratified",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 20,
+          "sampler": "top_k",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 25,
+          "sampler": "activeSampling",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 25,
+          "sampler": "random",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 25,
+          "sampler": "stratified",
+          "refine": false,
+          "calibration": false,
+          "routing": false
+        },
+        {
+          "budget_pct": 25,
+          "sampler": "top_k",
+          "refine": false,
+          "calibration": false,
+          "routing": false
         }
       ],
       "executors": {
-        "PROBE": null
+        "PROBE": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment sampling --dry-run",
+      "command": "python experiments/reproduce.py --experiment sampling",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Sampler ablation must use B_L, not full B; verify the Neyman-stratified branch is LR-only.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -417,6 +530,18 @@
       "repeat_status": "Single-run planning; manuscript does not prescribe repeats for this panel",
       "points": [
         {
+          "budget_pct": 5,
+          "stage": "LR"
+        },
+        {
+          "budget_pct": 5,
+          "stage": "bias"
+        },
+        {
+          "budget_pct": 5,
+          "stage": "full"
+        },
+        {
           "budget_pct": 10,
           "stage": "LR"
         },
@@ -427,15 +552,51 @@
         {
           "budget_pct": 10,
           "stage": "full"
+        },
+        {
+          "budget_pct": 15,
+          "stage": "LR"
+        },
+        {
+          "budget_pct": 15,
+          "stage": "bias"
+        },
+        {
+          "budget_pct": 15,
+          "stage": "full"
+        },
+        {
+          "budget_pct": 20,
+          "stage": "LR"
+        },
+        {
+          "budget_pct": 20,
+          "stage": "bias"
+        },
+        {
+          "budget_pct": 20,
+          "stage": "full"
+        },
+        {
+          "budget_pct": 25,
+          "stage": "LR"
+        },
+        {
+          "budget_pct": 25,
+          "stage": "bias"
+        },
+        {
+          "budget_pct": 25,
+          "stage": "full"
         }
       ],
       "executors": {
-        "PROBE": null
+        "PROBE": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment refinement --dry-run",
+      "command": "python experiments/reproduce.py --experiment refinement",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Frozen-L execution required; separate jobs cannot claim identical oracle labels.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -609,10 +770,10 @@
         "BARGAIN-P": "run.py",
         "BARGAIN-R": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment calibration --dry-run",
+      "command": "python experiments/reproduce.py --experiment calibration",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Workbook Fig9_Alpha uses 13 queries, mixed seed 0/1 and edited cells; not raw evidence. BARGAIN uses a separate target grid .1/.3/.5/.7/.9.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -668,12 +829,12 @@
         }
       ],
       "executors": {
-        "PROBE": null
+        "PROBE": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment representation --dry-run",
+      "command": "python experiments/reproduce.py --experiment representation",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Both axis and features must change; baseline paper comparison adapters not yet audited.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -730,13 +891,13 @@
         }
       ],
       "executors": {
-        "PROBE": null,
-        "no_proxy": null
+        "PROBE": "run.py",
+        "no_proxy": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment experts --dry-run",
+      "command": "python experiments/reproduce.py --experiment experts",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Supply immutable revisions and a separate model-matched endpoint per expert; runner never switches a live server.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -779,12 +940,12 @@
         }
       ],
       "executors": {
-        "PROBE": null
+        "PROBE": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment timing --dry-run",
+      "command": "python experiments/reproduce.py --experiment timing",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Seven-stage non-overlap and measured source coverage need reconciliation; current legacy four-phase report cannot certify this figure.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -828,13 +989,13 @@
       "executors": {
         "PROBE": "run.py",
         "BARGAIN-A": "run.py",
-        "ScaleDoc": null,
+        "ScaleDoc": "run.py",
         "no_proxy": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment low_selectivity --dry-run",
+      "command": "python experiments/reproduce.py --experiment low_selectivity",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": null,
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -866,12 +1027,12 @@
         }
       ],
       "executors": {
-        "PROBE": null
+        "PROBE": "run.py"
       },
-      "command": "python experiments/reproduce.py --experiment trace --dry-run",
+      "command": "python experiments/reproduce.py --experiment trace",
       "raw_runs": [],
-      "state": "missing_current_protocol_evidence",
-      "gap": "Figure-only batch300; do not substitute for batch32 experiments.",
+      "state": "execution_implemented_full_grid_not_verified",
+      "gap": "Full measured grids, independently attested expert revisions, controlled latency and exact paper-layout reporting remain unverified. Model endpoints and data must be provided.",
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
@@ -886,9 +1047,10 @@
     "AIQA": "UQE active sampling with its established proxy; sampling B%",
     "CSV": "cluster counts 4/2; 10% per-cluster sample; 90% consensus",
     "LOTUS": "Qwen3-VL-2B token logprob proxy; precision/recall target .9, delta .1; sampling10%",
-    "BARGAIN": "same refined PROBE proxy; accuracy .9, delta .1; main accuracy mode A",
+    "BARGAIN": "same refined PROBE proxy; accuracy .9, delta .1; main mode A; calibration P/R oracle allowance N",
     "ScaleDoc": "frozen embeddings; contrastive MLP; training5%, calibration5%, targetF1 .9",
-    "no_proxy": "same expert, prompts and entire candidate universe"
+    "no_proxy": "same expert, prompts and entire candidate universe",
+    "representations": "AIQA/CSV/ScaleDoc: frozen E5 text or CLIP text+images; normalized mean of available modalities/sides; revisions in source and per-run metadata"
   },
   "claims": {
     "default_probe_f1_geomean": {
@@ -1012,7 +1174,7 @@
       ]
     },
     "default_lotus_f1_geomean": {
-      "paper_value": 0.484,
+      "paper_value": 0.485,
       "status": "unverified_raw_evidence",
       "query_coverage": [
         "mmqa_q2a",
@@ -1032,7 +1194,7 @@
       ]
     },
     "default_scaledoc_delegation_median": {
-      "paper_value": 0.81,
+      "paper_value": 0.76,
       "status": "unverified_raw_evidence",
       "query_coverage": [
         "mmqa_q2a",
@@ -1072,7 +1234,7 @@
       ]
     },
     "default_lotus_delegation_median": {
-      "paper_value": 0.8,
+      "paper_value": 0.78,
       "status": "unverified_raw_evidence",
       "query_coverage": [
         "mmqa_q2a",

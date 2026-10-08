@@ -8,6 +8,10 @@ from pathlib import Path
 import statistics
 
 ROOT = Path(__file__).resolve().parents[1]
+import importlib.util
+_spec = importlib.util.spec_from_file_location("paper_runner_for_reporting", ROOT / "experiments/reproduce.py")
+_runner = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_runner)
 
 
 def load_runs(root, manifest):
@@ -92,11 +96,7 @@ def main():
         pairs = {(r["query"], r["system"], r["point"]) for r in present}
         expected = set()
         for query, system in __import__("itertools").product(experiment["queries"], experiment["systems"]):
-            points = experiment["points"][:1] if system == "no_proxy" else experiment["points"]
-            for point in points:
-                if name == "calibration" and system.startswith("BARGAIN"):
-                    if point.get("calibrator") != "platt" or point["target"] not in (.1, .3, .5, .7, .9):
-                        continue
+            for point in _runner.points_for_system(experiment, system):
                 expected.add((query, system, json.dumps(point, sort_keys=True)))
         coverage[name] = dict(complete_configuration_groups=len(pairs & expected),
                               expected_configuration_groups=len(expected),
@@ -133,7 +133,9 @@ def main():
             ax.set(xlabel="Unique candidate delegation fraction", ylabel="Query scorer F1 against GT")
             ax.legend(); fig.tight_layout()
             fig.savefig(a.output / (name + "_quality_delegation_diagnostic.pdf")); plt.close(fig)
-    print(json.dumps(dict(validated_runs=len(records), groups=len(aggregated), coverage=coverage)))
+    print(json.dumps(dict(validated_runs=len(records), groups=len(aggregated),
+        coverage={name:{k:v for k,v in entry.items() if k != 'missing_pairs'}
+                  for name,entry in coverage.items()})))
 
 
 if __name__ == "__main__":

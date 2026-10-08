@@ -10,24 +10,20 @@ The `vldb-artifact` branch is the default branch. This guide describes the paper
 components, workloads and experiment sections. The artifact's recorded manuscript
 snapshot is identified by source hashes
 in [manuscript_snapshot.json](docs/artifact/manuscript_snapshot.json), with source HEAD
-`a48d421`; later manuscript edits are not automatically covered by that snapshot.
+`c5b2d86`; later manuscript edits are not automatically covered by that snapshot.
 
 **Reproduction status:** the algorithm contracts and small real-model Spark examples
 have been checked. Complete reproduction of the paper's results is still pending.
-The instructions below distinguish executable runs from plans whose execution
-adapters are missing. See [validation.md](docs/artifact/validation.md) for measured
+All ten named experiment families have execution paths; the commands below select
+the paper grids and require real benchmark data and model endpoints. See [validation.md](docs/artifact/validation.md) for measured
 evidence and [experiment_alignment.md](docs/artifact/experiment_alignment.md) for gaps.
 
 - [How It Works](#how-it-works)
 - [The Three Components](#the-three-components)
-- [Repository Layout](#repository-layout)
 - [Workload](#workload)
 - [Installation](#installation)
 - [Data and Models](#data-and-models)
 - [Run the Experiments](#run-the-experiments)
-- [Generate the Figures and Tables](#generate-the-figures-and-tables)
-- [Reproducing the Baselines](#reproducing-the-baselines)
-- [Validation and Troubleshooting](#validation-and-troubleshooting)
 - [License](#license)
 
 ## How It Works
@@ -94,26 +90,6 @@ truth are separate quantities.
 
 See [algorithm_alignment.md](docs/artifact/algorithm_alignment.md) for formula-to-code
 mappings and safeguard details.
-
-## Repository Layout
-
-| File or directory | Purpose |
-| --- | --- |
-| [sem_ops_register.py](sem_ops_register.py), [proxy_model.py](proxy_model.py) | Public Spark semantic operators and proxy entry points |
-| [ce_ranker.py](ce_ranker.py), [ce_ranker_backend.py](ce_ranker_backend.py) | Fixed cross-encoder scores, features, provenance and caches |
-| [fixed_ce_sampling.py](fixed_ce_sampling.py), [sampling_strata.py](sampling_strata.py), [threshold_search_multi.py](threshold_search_multi.py) | Selectivity-Adaptive Sampling and multi-interval search |
-| [cluster_proxy.py](cluster_proxy.py) | Logistic-regression proxy and graph refinement |
-| [learned_calibration.py](learned_calibration.py), [stratified_calibration.py](stratified_calibration.py), [weighted_calibrator.py](weighted_calibrator.py), [budgeted_calibrated_router.py](budgeted_calibrated_router.py) | Calibration sampling, fitting and cascade routing |
-| [candidate_identity.py](candidate_identity.py), [oracle_budget.py](oracle_budget.py) | Stable candidate IDs, expert transport and call accounting |
-| [run.py](run.py) | Benchmark loaders, prompts, query scorers and execution |
-| [experiments/reproduce.py](experiments/reproduce.py) | Named paper plans, serial execution, run locking and resume |
-| [experiments/paper_manifest.json](experiments/paper_manifest.json) | Workload counts, protocols, systems, seeds, grids and execution availability |
-| [experiments/report.py](experiments/report.py) | Raw-output validation, aggregation and coverage reports |
-| [experiments/smoke.py](experiments/smoke.py) | Small real-model Spark filter/join integration check |
-| [docs/artifact/](docs/artifact/) | Environment, algorithm alignment, experiment gaps and validation records |
-| [tests/](tests/) | Numerical, public-operator, oracle-accounting and reporting checks |
-| [third_party/](third_party/) | Vendored baseline and benchmark sources; upstream licenses apply |
-| [paper_figures/](paper_figures/) | Historical workbook-based plot scripts and outputs |
 
 ## Workload
 
@@ -242,196 +218,152 @@ validates integration and does not measure paper quality or speedup.
 
 ## Run the Experiments
 
-### Paper section → experiment → command
+### Configure the models
 
-Run commands from the repository root. The following commands **preview** each
-experiment's resolved grid. Section names and LaTeX labels identify the paper
-artifacts independently of figure numbering.
+The runner executes the paper's ten experiment families through `run.py`, using
+actual expert calls, the benchmark's human-GT scorer and the full candidate
+universe. It rejects unresolved expert answers, missing GT provenance and a
+candidate count that differs from the manifest.
 
-| Paper section and artifact | Experiment configuration | Preview command | Execution status |
-| --- | --- | --- | --- |
-| End-to-end Comparison: `fig:sys-f1`, `fig:sys-latency` | 14 queries; seeds 0–4; preparation 10%, PROBE alpha 0.5, baseline target 0.9 | `python experiments/reproduce.py --experiment main --dry-run` | PROBE, no-proxy and BARGAIN-A executable; remaining baseline adapters pending |
-| Quality–Cost Tradeoff: `fig:sys-tradeoff`, `tab:main-comparison` | Budgets 5/10/15/20/25%; target grid 0.1/0.3/0.5/0.7/0.9 | `python experiments/reproduce.py --experiment sweep --dry-run` | Same three systems executable; full baseline grid and best-point table reconstruction pending |
-| Ablation on Sampling Policy: `fig:ablation` (a) | SAS / uniform / Neyman-stratified / top-K; same CE features and balanced LR; refinement/calibration/routing off | `python experiments/reproduce.py --experiment sampling --dry-run` | Plan only; consistent `B_L` execution and paper's 5–25% sweep still needed; current plan contains 10% |
-| Ablation on Graph Refinement Stage: `fig:ablation` (b) | LR / bias diffusion / full refinement, sharing one frozen SAS label set | `python experiments/reproduce.py --experiment refinement --dry-run` | Plan only; frozen-label executor and full budget sweep missing; current plan contains 10% |
-| Ablation on Learned Calibrated Cascade Routing: `fig:alpha-tradeoff` | Platt / GAM / none; alpha 0/0.1/0.3/0.5/0.7/0.9/1; BARGAIN target sweep | `python experiments/reproduce.py --experiment calibration --dry-run` | PROBE and BARGAIN-A/P/R executable; complete measured coverage and calibration-error reporting pending |
-| Ablation on Representation Model: `fig:repr-models` | Qwen CE / Jina CE / SigLIP / CLIP-base, replacing ordering scores and proxy features | `python experiments/reproduce.py --experiment representation --dry-run` | Plan only; alternative-model execution/provenance audit pending |
-| Ablation on the Expert LLM: `fig:mllm-generalization` | Qwen3-VL-30B-A3B-Instruct / Qwen3.8-27B / Gemma4-26B-A4B / GLM-4.6V-Flash; matched no-proxy per model | `python experiments/reproduce.py --experiment experts --dry-run` | Plan only; separate endpoints, revisions and expert-arm wiring needed |
-| Time Breakdown: `fig:time-stack` | Seven measured stages: embedding, sampling, expert calls, calibration, refinement, proxy training, proxy prediction | `python experiments/reproduce.py --experiment timing --dry-run` | Plan only; non-overlapping seven-stage accounting missing |
-| Case Study: Less Selective Queries: `tab:lowsel-results` | Cars Q4 / Ecomm Q6 / Movie Q5; preparation 10% and 25%; alpha 0.5, baseline target 0.9 | `python experiments/reproduce.py --experiment low_selectivity --dry-run` | PROBE, no-proxy and BARGAIN-A executable; ScaleDoc adapter pending |
-| Sampling illustrations: `fig:encoder-rank`, `fig:sas-multi-process` | Ecomm Q9; figure-only batch size 300, separate from default batch size 32 | `python experiments/reproduce.py --experiment trace --dry-run` | Plan only; trace exporter and plotting audit pending |
+Copy [models.example.json](experiments/models.example.json) to `models.local.json`.
+Replace every `REPLACE_WITH_SERVED_WEIGHT_COMMIT` used by your selected arms with
+the **40-character commit of the weights actually loaded by that server**, and
+set its served model ID and URL. The expert ablation requires a separate binding
+for each of the four experts; every no-proxy reference uses the matching binding.
+LOTUS additionally requires a real Qwen3-VL-2B proxy endpoint that returns token
+log-probabilities. The runner checks advertised model IDs before execution;
+this does not independently attest the server's weight revision.
+
+Qwen CE, Jina CE, SigLIP and CLIP revisions are pinned in the example. Downloads
+finish before measured execution starts. AIQA, CSV and ScaleDoc use frozen E5
+text embeddings or CLIP text/image embeddings. LOTUS's upstream cascade helper
+is vendored with its license and source hash; it does not require installing the
+incompatible full LOTUS package. Details and adapter choices are recorded in
+[experiment_alignment.md](docs/artifact/experiment_alignment.md).
+
+For ScaleDoc, obtain the upstream source separately:
 
 ```bash
-# Preview all ten named plans. This does not execute the experiments.
+git clone https://github.com/Seurgul/ScaleDoc.git external/ScaleDoc
+git -C external/ScaleDoc checkout 33d6e815a84f9ac295336d6ece97f66adab5fa51
+export SCALEDOC_SOURCE="$PWD/external/ScaleDoc"
+cp experiments/models.example.json models.local.json
+# Edit models.local.json with the endpoint IDs, URLs and actual served revisions.
+```
+
+ScaleDoc imports its encoder, contrastive loss, augmentation and threshold helpers
+from this checkout; the runner records its source hashes. Its upstream augmentation
+requires a CUDA client. Other selected arms do not need the ScaleDoc checkout.
+Keep local model configuration and external sources out of commits.
+
+### Execute each paper section
+
+Run from the repository root after exporting the data paths, expert endpoint and
+expert revision described above. Define this helper once:
+
+```bash
+paper_run() {
+  python experiments/reproduce.py --device cuda:0 \
+    --model-revision "$PROBE_ORACLE_REVISION" \
+    --model-config models.local.json --scaledoc-source "$SCALEDOC_SOURCE" \
+    --output results/paper --resume "$@"
+}
+
+# First verify one small, real benchmark query.
+paper_run --experiment main --systems PROBE --queries match113 --seeds 0
+```
+
+The following commands **execute**, rather than only print, the corresponding
+paper grids. Section names and LaTeX labels identify the artifacts independently
+of figure numbering.
+
+| Paper section / artifact | Protocol | Execution command |
+| --- | --- | --- |
+| End-to-end Comparison: `fig:sys-f1`, `fig:sys-latency` | 14 queries, seeds 0–4; 10% budget or target 0.9; all seven systems | `paper_run --experiment main` |
+| Quality–Cost Tradeoff: `fig:sys-tradeoff`, `tab:main-comparison` | Budgets 5/10/15/20/25%; target grid 0.1/0.3/0.5/0.7/0.9 | `paper_run --experiment sweep` |
+| Sampling Policy: `fig:ablation` (a) | SAS / uniform / Neyman-stratified / top-K; full 5–25% grid; balanced LR; graph, calibration and routing disabled | `paper_run --experiment sampling` |
+| Graph Refinement: `fig:ablation` (b) | LR / bias diffusion / full refinement; full 5–25% grid; shared frozen SAS expert labels | `paper_run --experiment refinement` |
+| Calibrated Cascade Routing: `fig:alpha-tradeoff` | Platt / GAM / none; alpha 0/0.1/0.3/0.5/0.7/0.9/1; BARGAIN-A/P/R target sweep | `paper_run --experiment calibration` |
+| Representation Model: `fig:repr-models` | Qwen CE / Jina CE / SigLIP / CLIP-base; replace both ranking and proxy features | `paper_run --experiment representation` |
+| Expert LLM: `fig:mllm-generalization` | Four experts, each paired with its own full no-proxy reference | `paper_run --experiment experts` |
+| Time Breakdown: `fig:time-stack` | Seven measured, exclusive stages, with Spark/client overhead reported separately | `paper_run --experiment timing` |
+| Less Selective Queries: `tab:lowsel-results` | Cars Q4 / Ecomm Q6 / Movie Q5; budgets 10% and 25%; target 0.9 | `paper_run --experiment low_selectivity` |
+| Sampling illustrations: `fig:encoder-rank`, `fig:sas-multi-process` | Ecomm Q9; actual sampling events and encoder order; figure-only batch size 300 | `paper_run --experiment trace` |
+
+```bash
+# Preview the complete grid without Spark, model downloads or expert calls.
 python experiments/reproduce.py --experiment all --dry-run
+
+# Execute a budget subset of the sampling ablation.
+paper_run --experiment sampling --queries match113 --budgets 10 --seeds 0
+
+# Execute just the served Gemma expert and its matching no-proxy reference.
+paper_run --experiment experts --experts Gemma4-26B-A4B --queries match113
+
+# Execute one alternative representation.
+paper_run --experiment representation --representations CLIP-base --queries match113
 ```
 
-An executable arm means the runner is wired to the implementation; it does not mean
-the complete paper grid has been rerun or certified. Without `--dry-run`, plans with
-unavailable adapters stop before expert calls. For example, the default `main` plan
-includes all baselines, so select available systems to run the executable subset.
-
-### Execute available experiments
-
-First check one small real benchmark query:
-
-```bash
-python experiments/reproduce.py --experiment main --systems PROBE \
-  --queries match113 --seeds 0 --device cuda:0 \
-  --data-root "$PROBE_DATA_ROOT" --lro-root "$LROBENCH_DATABASES_DIR" \
-  --model-revision "$PROBE_ORACLE_REVISION" \
-  --output results/paper --resume
-```
-
-Then run available arms for the main comparison and other experiments:
-
-```bash
-# Main quality: all 14 queries, five seeds per system/configuration.
-python experiments/reproduce.py --experiment main \
-  --systems PROBE no_proxy BARGAIN-A --device cuda:0 \
-  --model-revision "$PROBE_ORACLE_REVISION" --output results/paper --resume
-
-# Budget/target sweep: the manifest currently plans seed 0.
-python experiments/reproduce.py --experiment sweep \
-  --systems PROBE no_proxy BARGAIN-A --device cuda:0 \
-  --model-revision "$PROBE_ORACLE_REVISION" --output results/paper --resume
-
-# Calibration/routing comparison, including BARGAIN modes.
-python experiments/reproduce.py --experiment calibration \
-  --systems PROBE BARGAIN-A BARGAIN-P BARGAIN-R --device cuda:0 \
-  --model-revision "$PROBE_ORACLE_REVISION" --output results/paper --resume
-
-# Less selective case study: three queries at two planned budgets.
-python experiments/reproduce.py --experiment low_selectivity \
-  --systems PROBE no_proxy BARGAIN-A --device cuda:0 \
-  --model-revision "$PROBE_ORACLE_REVISION" --output results/paper --resume
-```
-
-These commands inherit the data paths and expert endpoint exported above. Use
-`--queries`, `--systems` and `--seeds` to select a subset, and preview the same
-arguments with `--dry-run` before launching. A subset remains a partial reproduction.
-Full grids can require millions of expert calls. Run the client serially against
+`--queries`, `--systems`, `--seeds`, `--budgets`, `--alphas`, `--representations`
+and `--experts` select existing grid points. They do not change paper workloads.
+A subset is partial reproduction. Main quality requires five actual seeds per
+configuration; the other grids default to seed 0, and `--seeds` can request further
+runs. Full grids can require millions of expert calls; run clients serially under
 the same controlled server settings when comparing latency.
 
-For experiments marked **plan only**, removing `--dry-run` is insufficient. Their
-missing execution requirements are listed above and in
-[experiment_alignment.md](docs/artifact/experiment_alignment.md). Older
-`experiments/01_...sh` through `09_...sh` scripts explicitly use legacy settings
-and do not fill these current-paper gaps. The appendix is disabled in the recorded
-manuscript; historical hyperparameter and appendix scripts are outside this guide's
-active reproduction target.
+The sampling and graph ablations use `floor(0.8 * B)` training labels. Graph arms
+reuse the recorded expert acquisition, including its candidate IDs, labels and
+hashes. Shared preparation time and each arm's physical request count are stored
+separately. With routing disabled, one-class ablations use a constant prediction from the
+observed class, with no extra expert calls. `--ablation-single-class oracle` selects
+an explicitly different S3 variant; the reporter rejects mixing it with the default
+paper protocol. Complete PROBE execution retains S3 fallback.
+BARGAIN-P and BARGAIN-R use an oracle allowance of `N` for the current paper's
+unlimited-budget comparisons.
+
+Execution support does not certify the paper's numerical claims. Small real-model
+checks and protocol tests are recorded in
+[validation.md](docs/artifact/validation.md); complete grids, controlled speedup
+comparisons and exact paper-layout figure reconstruction remain unverified.
+Historical `experiments/01_...sh` through `09_...sh` scripts retain older settings.
+The appendix is disabled in the recorded manuscript and is outside these ten grids.
 
 ### Outputs and resume
 
-Each job receives a directory derived from configuration, source hashes and data paths:
+Each job receives a directory derived from its configuration, source hashes,
+model bindings, device and data paths:
 
 ```text
 results/paper/<run-id>/
   completed.json                 # job identity, measured row and output hashes
   attempt-001/
-    resolved.json                # source hashes and resolved job configuration
+    resolved.json                # resolved job and source hashes
     stdout.log                   # Spark/client execution log
     oracle.jsonl                 # actual expert responses and call stages
+    pipeline.json                # policy decisions and measured stage times
+    candidate_predictions.npz    # stable IDs and decisions (proxy arms)
+    frozen_acquisition.json      # shared expert labels (graph ablation)
+    proxy_oracle.jsonl           # actual helper responses (LOTUS)
+    encoder_ranking.npz           # ordering scores (trace experiment)
+    sampling_trace.json          # actual sampling events (trace experiment)
+    *_paper_timing.json          # seven stages and separate client/Spark overhead
     <query>_results.csv           # query metrics and profiling
     *_result.csv/part-*.csv       # raw Spark prediction output
 ```
 
-`--resume` skips intact completed jobs. Interrupted jobs restart in a new preserved
-attempt, which may repeat expert requests; it is not recovery inside an oracle
-batch. Existing completed outputs are not overwritten. The reporter checks raw
-output hashes, candidate counts, human-GT provenance and expert failures.
-
-## Generate the Figures and Tables
-
-### Validate and aggregate new runs
+Files specific to another arm are absent. `results/paper/frozen/` stores locked,
+hashed acquisitions for graph ablations. `--resume` skips intact completed jobs;
+interrupted jobs restart in a new preserved attempt and may repeat expert requests.
+Completed outputs are not overwritten. `--timeout-seconds` sets a per-job timeout
+(default 24 hours). The reporter validates raw hashes, candidate counts, human-GT
+provenance and expert failures before aggregating:
 
 ```bash
-python experiments/report.py --input results/paper --output results/figures
+python experiments/report.py --input results/paper --output results/report
 ```
 
-| Output | Contents |
-| --- | --- |
-| `validated_runs.json` / `.csv` | Individual measurements accepted by validation checks; CSV is written when records exist |
-| `aggregate.json` / `.csv` | Per-query/configuration means, observed seeds and completeness; CSV is written when groups exist; main F1 has a Student-t 95% CI only with all five seeds |
-| `coverage.json` | Missing query/system/configuration groups for each paper experiment |
-| `recomputed_claims.json` | Main-evaluation aggregates for systems with complete seed and query coverage |
-
-Zeros remain in geometric means; missing queries are reported rather than silently
-dropped. The tradeoff table requires selecting points from complete measured sweeps:
-quality-first minimizes delegation among maximum-quality points; cost-first minimizes
-delegation among points reaching 90% of model-matched no-proxy quality, with the
-paper's stated Ecomm Q9 exception.
-
-```bash
-# Currently refuses incomplete experiment coverage.
-python experiments/report.py --input results/paper --output results/figures --plot-all
-```
-
-Even after coverage checks pass, `--plot-all` produces
-`<experiment>_quality_delegation_diagnostic.pdf` files. Exact paper-layout quality,
-speedup, calibration, representation, timing and trace figures, and the best-point
-LaTeX table, still require audited figure/table generators. The manifest's planned
-PDF names are output targets, not evidence that those files have been reproduced.
-
-### Historical figures
-
-[paper_figures/make_figures.sh](paper_figures/make_figures.sh) redraws older figures
-from `paper_figures/plotdata.xlsx`:
-
-```bash
-# Historical workbook rendering only; does not rerun current paper experiments.
-bash paper_figures/make_figures.sh
-```
-
-It writes PDFs/PNGs under `paper_figures/figures/` and LaTeX tables under
-`paper_figures/tables/`. Existing workbook cells and PDFs are presentation artifacts;
-they do not replace current-protocol raw runs. Their older model lists, router
-variants and estimated timing must not certify the current paper.
-
-## Reproducing the Baselines
-
-All comparisons must use the same expert, prompts, full candidate universe and
-human-GT scorer. Select available systems with `--systems` in the commands above.
-
-| System | Paper configuration | Current reproduction entry/status |
-| --- | --- | --- |
-| `no_proxy` | Expert evaluates every candidate with all proxy optimizations disabled | Executable in `main`, `sweep`, `low_selectivity`; same stable-ID expert transport |
-| `BARGAIN-A` | PROBE's refined proxy; accuracy target 0.9, failure probability 0.1 | Executable in `main`, `sweep`, `calibration`, `low_selectivity`; vendored implementation via [bargain_refined.py](bargain_refined.py) |
-| `BARGAIN-P`, `BARGAIN-R` | Same refined proxy; precision/recall target sweep; uncapped expert budget | Executable in `calibration`; use that experiment's target grid |
-| `AIQA` | UQE active sampling and its learned proxy | Named plan available; current-paper representation/integration audit pending |
-| `CSV` | Cluster counts 4 / 2; 10% samples per cluster; 90% label consensus | Named plan available; current-paper adapter audit pending |
-| `LOTUS` | Qwen3-VL-2B token-logprob proxy; precision/recall targets 0.9, failure probability 0.1, sampling 10% | Named plan available; current-paper adapter audit pending |
-| `ScaleDoc` | Frozen embeddings, contrastive MLP, training 5% / calibration 5%, F1 target 0.9 | Named plan available; current-paper adapter audit pending |
-
-Older baseline scripts are retained for research context. A successful legacy
-baseline run is not automatically comparable with the active manifest protocol.
-
-## Validation and Troubleshooting
-
-```bash
-# Full client regression suite; requires client dependencies and Java 11.
-python -m pytest -q tests
-
-# Selected numerical/protocol checks, usable with requirements.core.txt.
-python -m pytest -q tests/test_fixed_ce_paper_protocol.py tests/test_paper_defaults.py \
-  tests/test_weighted_calibrator.py tests/test_stratified_calibration.py \
-  tests/test_budgeted_calibrated_router.py tests/test_artifact_reporting.py
-```
-
-The recorded clean-clone validation passed **356 tests**. Real integration checks
-covered the small Spark filter/join and one `match113` benchmark run. These checks
-do not establish paper-wide quality or latency claims.
-
-| Symptom | Check |
-| --- | --- |
-| Java gateway startup fails | `JAVA_HOME` points to an installed Java 11 runtime |
-| Benchmark files are missing or `N` differs | Prepared data root, scenario scale factor and exact query universe |
-| Expert endpoint/model error | Server availability, served model name, endpoint URL and weight revision |
-| CE download or GPU-memory error | Hugging Face access/cache and memory for the pinned cross-encoder alongside the expert |
-| `Unaudited adapters` | Select an executable system/experiment or inspect the documented missing adapter |
-| Full plotting refuses to run | Read `coverage.json`; incomplete seeds, queries or systems remain partial evidence |
-
-Further installation and provenance details are in [ARTIFACT.md](docs/artifact/ARTIFACT.md).
+It records missing configurations explicitly. Trace files contain execution data;
+they do not fabricate labels or infer latency from delegation rates.
 
 ## License
 

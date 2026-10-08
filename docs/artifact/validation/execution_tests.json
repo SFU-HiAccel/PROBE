@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-08",
+  "full_suite": {
+    "command": "python -m pytest -q tests",
+    "passed": 386,
+    "warnings": 148,
+    "log_sha256": "52c20009dede989e1b78129026c8fd95d150f90fc61853b7d94ef345686989b2"
+  },
+  "subsequent_focused_policy_tests": {
+    "passed": 8,
+    "log_sha256": "dfc2577a569658de5b78c2cb20e11dac0e0c0c2e9a3923e8f08aedd40ed12678"
+  },
+  "client_dependency_check": "pip check: No broken requirements found",
+  "scope": "Unit fixtures do not provide paper measurements. Full suite passed before final preflight/default-CUDA hardening; focused tests and actual CUDA training subsequently verified those paths.",
+  "scaledoc_training_contract": {
+    "scope": "Synthetic-label CUDA/training contract; not paper evidence",
+    "epochs": [
+      50,
+      30
+    ],
+    "status": "trained",
+    "seconds": 4.688830791041255,
+    "source_hashes": {
+      "model.py": "ecd82288fc86355e83745601ae3fb346710df6e1958eac9ead97d55b5ff5387e",
+      "utils/sample.py": "82ce272d4b6f6aa85a21e0ee03974ef7e41bd08b5ca6cf7af0159c3cea217d28",
+      "train_cl.py": "01886c12d275ffee56269cbefc922580079cc6862285c53f62f5395d8d659eb2",
+      "utils/train.py": "2f0d665cbc45836ebc14fc75c283aa7444e30e4817fa5794594e978b92eed5fe"
+    }
+  },
+  "formal_grid": {
+    "families": 10,
+    "configurations": 2116,
+    "unique_configurations": 2116,
+    "scope": "Configuration/executor coverage, not completed paper runs"
+  },
+  "publication_check": {
+    "selected_files_scanned": 645,
+    "files_with_checked_pattern_findings": 0,
+    "scope": "Selected publish tree; checked token/private-key/personal-path patterns only, not exhaustive. Prior history scan is recorded separately."
+  }
+}

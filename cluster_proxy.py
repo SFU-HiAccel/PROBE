@@ -3431,6 +3431,7 @@ def cluster_proxy_pipeline(
     activeSampling_backend: str = "fixed_ce",
     fixed_ce_config: Optional[Any] = None,
     fixed_ce_scores: Optional[np.ndarray] = None,
+    paper_query_embedding: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Sample + predict pipeline.
 
@@ -3455,6 +3456,13 @@ def cluster_proxy_pipeline(
         positive_mask: (N,) boolean mask of predicted positives.
         profiling_info: Dict with timing and statistics.
     """
+    if os.environ.get("PROBE_PAPER_JOB"):
+        from experiments.paper_pipeline import execute
+        return execute(embeddings, texts, label_fn_factory, sample_size,
+                       fixed_ce_scores if fixed_ce_scores is not None else similarities,
+                       fixed_ce_config, learned_calibration_config,
+                       query_embedding=paper_query_embedding)
+
     profiling: Dict[str, Any] = {}
     vllm_time_acc = [0.0]
     n_total = embeddings.shape[0]

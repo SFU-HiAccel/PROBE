@@ -17,3 +17,7 @@ results/
 .playwright-mcp/
 *.bak
 *.bak_*
+
+# Local paper model bindings and separately obtained baseline sources.
+models.local.json
+external/

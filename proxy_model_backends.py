@@ -280,8 +280,8 @@ class CLIPBackend:
             return
         import torch
         from transformers import CLIPModel, CLIPProcessor
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.float16 if device == "cuda" else None
+        device = os.environ.get("PROBE_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+        dtype = torch.float16 if device.startswith("cuda") else None
         self._model = CLIPModel.from_pretrained(
             self.model_id, torch_dtype=dtype
         ).to(device).eval()
@@ -300,7 +300,7 @@ class CLIPBackend:
                 batch, padding=True, truncation=True,
                 max_length=77, return_tensors="pt"
             ).to(self._device)
-            with torch.no_grad(), torch.amp.autocast(self._device):
+            with torch.no_grad(), torch.amp.autocast(self._device.split(':')[0]):
                 feats = self._model.get_text_features(**inputs)
             feats = _extract_features_tensor(feats)
             feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-8)
@@ -320,9 +320,11 @@ class CLIPBackend:
                 try:
                     imgs.append(Image.open(p).convert("RGB"))
                 except Exception:
+                    if os.environ.get("PROBE_PAPER_JOB"):
+                        raise
                     imgs.append(Image.new("RGB", (224, 224)))
             inputs = self._processor(images=imgs, return_tensors="pt").to(self._device)
-            with torch.no_grad(), torch.amp.autocast(self._device):
+            with torch.no_grad(), torch.amp.autocast(self._device.split(':')[0]):
                 feats = self._model.get_image_features(**inputs)
             feats = _extract_features_tensor(feats)
             feats = feats / (feats.norm(dim=-1, keepdim=True) + 1e-8)

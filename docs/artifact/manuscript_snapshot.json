@@ -1,7 +1,7 @@
 {
-  "observed_at_utc": "2026-10-08T21:24:43.025969+00:00",
+  "observed_at_utc": "2026-10-08T23:30:55.887086+00:00",
   "source_worktree": "../PROBE-VLDB",
-  "source_head": "a48d421c127ffe8d802644fecfd2b966dd494ee0",
+  "source_head": "c5b2d862939ef4e8ee5b90be9fee9540602a4268",
   "source_is_dirty": true,
   "authority": "Current worktree bytes, including staged and unstaged edits; HEAD alone does not identify this manuscript.",
   "appendix_status": "sections/09_appendix.tex exists but its input is commented out in main.tex. Audit separately from the active manuscript.",
@@ -15,40 +15,40 @@
       "bytes": 37719
     },
     "sections/00_abstract.tex": {
-      "sha256": "1bd203f60ba5de0e013f7757d64e81624b7f7517f96030e7b625162a3bd6b604",
-      "bytes": 1422
+      "sha256": "735a6e4b0711bbe268b23952f29ab39848a3a9151e914f8093d4da0fa6f12ba4",
+      "bytes": 1414
     },
     "sections/01_introduction.tex": {
-      "sha256": "27150be996a61ee1c1aaf5794038429ee62b9248a57dddd1b0003b8f77ea9fc4",
-      "bytes": 12328
+      "sha256": "19da46d9612f9ece5a78e1a692da32dd59944add5cd76399151fcd916d378552",
+      "bytes": 12313
     },
     "sections/02_background.tex": {
       "sha256": "b7721f2f59f239b6bb3ccc37ec6930fc6b20f22dc12b20fc69851faca0a83b76",
       "bytes": 4037
     },
     "sections/03_sampling.tex": {
-      "sha256": "481b6218b2ba36f179220046418b64d004a79e3c2e55fa95c910c667b4d00c64",
-      "bytes": 19467
+      "sha256": "17acd982df4385f60c29f555fc7080b3c48d0e040c115712716b134bee05fd7f",
+      "bytes": 20019
     },
     "sections/04_label_propagation.tex": {
       "sha256": "f529642aff067dc10e7eb26c59a42d4b9ee05f3eb8f6fbea21d68c4229b3b98e",
       "bytes": 7050
     },
     "sections/05_learned_guided_fallback.tex": {
-      "sha256": "ab29b014a776fcb5166c796e036a1c508ce9aea55d3b67e19257c418f254e175",
-      "bytes": 12708
+      "sha256": "3133c40bf6084231c8529220f389fc9f3da11544f8fa3aa63e4663f24d540835",
+      "bytes": 12809
     },
     "sections/06_evaluation.tex": {
-      "sha256": "9fa28f26141eeb722908bed9252800ab453b852cb8c1e021b3a32cdd5da43383",
-      "bytes": 20835
+      "sha256": "5792d381459e730d3b450bbe8a44a4102cb7000ea3cc2cd6ecfdfe91199878c9",
+      "bytes": 20887
     },
     "sections/07_related_work.tex": {
       "sha256": "574209a87564dab052a5c644e62bf2bd128ecc5069bcb67cb01de1d876a92bef",
       "bytes": 1589
     },
     "sections/08_conclusion.tex": {
-      "sha256": "aced3639522ee0eafbde8878712d3f9b5cfc80296aa5542fc8eda9886917330b",
-      "bytes": 491
+      "sha256": "1ab8c01d42923e488578214887ce709cfaa20648a68682e9e81ce88852721975",
+      "bytes": 481
     },
     "sections/09_appendix.tex": {
       "sha256": "b4ef085a749cc977fab87374986b4f2099446181012a25709f3b24ea4d306d22",
@@ -59,8 +59,8 @@
       "bytes": 2859
     },
     "tables/best_points.tex": {
-      "sha256": "98e56cfd1ebe758e65ef002dc3d52867b39304b011daf7d5a70683a773911513",
-      "bytes": 4972
+      "sha256": "5ce50250ac7f8bf9ac7d4ec3d82f61fe69e6f9f8392eb494cc35f822e3c86f24",
+      "bytes": 4954
     },
     "figures/Algo3.pdf": {
       "sha256": "f49ce6878d3677c8ababca5d79bf8000d5874b6cfe7d49dcfc78ec510046840f",
@@ -75,8 +75,8 @@
       "bytes": 189826
     },
     "figures/all_queries.pdf": {
-      "sha256": "2078e972c3be33ef02847581c565e3a74a2406b2a2d4a84fc09917db93ae8cdc",
-      "bytes": 50807
+      "sha256": "805f21e962ff3f82d6e3ffd086ab64d3545d33db7a13c832ead78ebbb5acecc0",
+      "bytes": 50797
     },
     "figures/alpha_tradeoff.pdf": {
       "sha256": "1fec91d9373c388ad0a0bbdd8ec4effb7835a51ad1c7daab68c24697f6454a11",

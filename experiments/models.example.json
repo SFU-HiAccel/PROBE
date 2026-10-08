@@ -1,0 +1,47 @@
+{
+  "representations": {
+    "Qwen3-VL-Reranker-2B": {
+      "model": "Qwen/Qwen3-VL-Reranker-2B",
+      "revision": "4bd860ac4f15ad1897a214615cccc700f8f71818"
+    },
+    "jina-reranker-m0": {
+      "model": "jinaai/jina-reranker-m0",
+      "revision": "94bfe0aeb2d4dd7978362699cddd5893d4e0adc8"
+    },
+    "SigLIP": {
+      "model": "google/siglip-base-patch16-224",
+      "revision": "7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed"
+    },
+    "CLIP-base": {
+      "model": "openai/clip-vit-base-patch32",
+      "revision": "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268"
+    }
+  },
+  "experts": {
+    "Gemma4-26B-A4B": {
+      "model": "google/gemma-4-26B-A4B-it",
+      "revision": "REPLACE_WITH_SERVED_WEIGHT_COMMIT",
+      "oracle_url": "http://127.0.0.1:8000/v1/chat/completions"
+    },
+    "Qwen3-VL-30B-A3B-Instruct": {
+      "model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
+      "revision": "REPLACE_WITH_SERVED_WEIGHT_COMMIT",
+      "oracle_url": "http://127.0.0.1:8001/v1/chat/completions"
+    },
+    "Qwen3.8-27B": {
+      "model": "Qwen/Qwen3.8-27B-FP8",
+      "revision": "REPLACE_WITH_SERVED_WEIGHT_COMMIT",
+      "oracle_url": "http://127.0.0.1:8002/v1/chat/completions"
+    },
+    "GLM-4.6V-Flash": {
+      "model": "zai-org/GLM-4.6V-Flash",
+      "revision": "REPLACE_WITH_SERVED_WEIGHT_COMMIT",
+      "oracle_url": "http://127.0.0.1:8003/v1/chat/completions"
+    }
+  },
+  "lotus_proxy": {
+    "model": "Qwen/Qwen3-VL-2B-Instruct",
+    "revision": "REPLACE_WITH_SERVED_WEIGHT_COMMIT",
+    "oracle_url": "http://127.0.0.1:8004/v1/chat/completions"
+  }
+}

@@ -10,7 +10,10 @@
       "pyarrow": "23.0.0",
       "torch": "2.9.1",
       "transformers": "5.3.0",
-      "openai": "2.6.1"
+      "openai": "2.6.1",
+      "torchvision": "0.24.1",
+      "sentencepiece": "0.2.1",
+      "protobuf": "5.29.5"
     },
     "java": "Java11 Zulu11.2+3"
   },

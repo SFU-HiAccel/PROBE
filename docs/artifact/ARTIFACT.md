@@ -1,6 +1,6 @@
 # PROBE VLDB artifact
 
-The public algorithm defaults follow the active manuscript at `a48d421`. Current release status is **algorithm and integration verified, complete paper reproduction pending**. See `algorithm_alignment.md`, `experiment_alignment.md`, `validation.md` and `paper_manifest.json` for distinct implementation and evidence states.
+The public algorithm defaults follow the active manuscript at `c5b2d86`. Current release status is **algorithm and integration verified, complete paper reproduction pending**. See `algorithm_alignment.md`, `experiment_alignment.md`, `validation.md` and `paper_manifest.json` for distinct implementation and evidence states.
 
 ## Installation and environments
 
@@ -54,7 +54,7 @@ result = df.sem_filter(
 
 ## Experiments and outputs
 
-Every active experiment has one named plan:
+Every active experiment has a named execution path. Append `--dry-run` to preview without downloads, Spark or expert calls:
 
 ```bash
 python experiments/reproduce.py --experiment main --dry-run
@@ -86,7 +86,7 @@ Runs reject a candidate count different from paper N. Completion also requires p
 
 Reporting validates output hashes and protocol, separates query metrics, rejects duplicate seeds, gives Student-t95% CI only for complete five-run main-quality groups, and writes coverage gaps. A geometric mean containing zero is zero; missing queries are not dropped from a complete-paper claim. `--plot-all` refuses incomplete experiment coverage. Any plots it emits are diagnostic quality/delegation views, not a claim that original paper layouts or every numeric conclusion have been reproduced.
 
-Missing/unaudited adapters fail before expensive runs. The manifest names these gaps explicitly. In particular, frozen-L refinement, alternative representations/experts, seven-stage timing, trace formatting and CSV/LOTUS/ScaleDoc integration are not yet certified. Existing PDFs/workbook cells and historical shell scripts do not fill those gaps.
+All ten families have executors, including frozen-label refinement, alternate representations/experts, seven-stage timing, traces and baseline adapters. Missing endpoint/revision/source prerequisites fail before expert calls. Full grids and exact paper-layout plots remain unverified; historical PDFs/workbooks do not fill those evidence gaps. See `experiment_alignment.md` for explicit adapter choices.
 
 ## Validation and troubleshooting
 

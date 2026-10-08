@@ -647,7 +647,7 @@ def _load_siglip(model_path: str):
 
     version = _get_siglip_version(model_path) or 1
     logger.info(f"Loading SigLIP v{version} model from {model_path}...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _os.environ.get("PROBE_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
 
     attn_impl = _os.environ.get("LLMSQL_SIGLIP_ATTN") or _siglip_pick_attn_impl(version, device)
     load_kwargs: Dict[str, Any] = {}
@@ -657,12 +657,14 @@ def _load_siglip(model_path: str):
     processor = AutoImageProcessor.from_pretrained(model_path, use_fast=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
 
-    if device == "cuda":
+    if device.startswith("cuda"):
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     else:
         amp_dtype = None
 
     n_gpus = torch.cuda.device_count() if device == "cuda" else 0
+    if _os.environ.get("PROBE_PAPER_JOB"):
+        n_gpus = 0  # A paper job uses its explicitly selected client device.
     env_cap = _os.environ.get("LLMSQL_MULTI_GPU")
     if env_cap is not None:
         try:
@@ -718,10 +720,11 @@ def _load_siglip(model_path: str):
                 mdl = _attempt(fb_kwargs)
             else:
                 raise
-        try:
-            mdl = torch.compile(mdl, mode="reduce-overhead")
-        except Exception as exc:
-            logger.info(f"torch.compile not available on {dev}, eager: {exc}")
+        if not _os.environ.get("PROBE_PAPER_JOB"):
+            try:
+                mdl = torch.compile(mdl, mode="reduce-overhead")
+            except Exception as exc:
+                logger.info(f"torch.compile not available on {dev}, eager: {exc}")
         return {
             "model": mdl,
             "text_forward": _TextForward(mdl).to(dev).eval(),
@@ -891,6 +894,8 @@ def embed_images_siglip(image_paths: List[str], model_path: str, batch_size: int
             # but threads avoid the IPC overhead for typical batches.
             with ThreadPoolExecutor(max_workers=min(32, len(batch_paths))) as pool:
                 results = list(pool.map(_load_image, batch_paths))
+            if os.environ.get("PROBE_PAPER_JOB") and not all(ok for _,ok in results):
+                raise ValueError("Paper representation encountered an unreadable benchmark image")
             images = [img for img, ok in results if ok]
             valid_mask = [ok for _, ok in results]
 
@@ -1776,6 +1781,29 @@ def _build_pair_interaction_features(
 #   ce         axis = cross-encoder score; features = its last-token hidden state, PCA-reduced
 REPR_MODES = ("mixed", "biencoder", "ce")
 CE_HIDDEN_RANK = int(os.environ.get("PROBE_CE_HIDDEN_RANK", "256"))
+
+
+def _paper_baseline_job():
+    import json
+    raw = os.environ.get("PROBE_PAPER_JOB")
+    if not raw:
+        return None
+    job = json.loads(raw)
+    return job if job["system"] in ("AIQA", "CSV", "LOTUS", "ScaleDoc") else None
+
+
+def _paper_baseline_representation(left, right, predicate, job, prof):
+    if job["system"] == "LOTUS":
+        # LOTUS's proxy makes actual token-logprob requests; it does not use
+        # PROBE's encoder. The dummy shape only transports candidate alignment.
+        return np.zeros((len(right), 1), np.float32), np.zeros(1, np.float32)
+    from experiments.paper_baselines import encode_contents
+    begin = time.perf_counter()
+    features, query, info = encode_contents(left, right, predicate, job,
+                                           os.environ.get("PROBE_DEVICE", "cuda"))
+    prof["embedding_time"] += time.perf_counter()-begin
+    prof["baseline_representation"] = info
+    return features, query
 
 
 def _repr_mode() -> str:
@@ -3535,6 +3563,11 @@ def _make_fixed_ce_oracle(texts, model, url, system_prompt, max_tokens,
                           temperature, concurrency, sample_size, budget_size,
                           calibration_config, router_max_calls, paper_protocol=True):
     from oracle_budget import PipelineOracle, OpenAIOracleRequest
+    if os.environ.get("PROBE_PAPER_JOB"):
+        import json
+        job = json.loads(os.environ["PROBE_PAPER_JOB"])
+        if len(texts) != job["paper_N"]:
+            raise ValueError(f"Candidate mismatch before expert calls: {len(texts)} != {job['paper_N']}")
     limit = (int(calibration_config.total_budget) if calibration_config is not None
              else int(sample_size) + max(0, int(router_max_calls or 0)))
     if budget_size is not None:
@@ -3696,7 +3729,7 @@ def proxy_filter(
     sample_size, decision_mode, learned_calibration_config, defer_enabled = _resolve_paper_operator(
         total_rows, sample_size, budget_size, sampling_method, activeSampling_backend,
         decision_mode, learned_calibration_config, defer_enabled, random_seed)
-    ce_only = _repr_mode() == "ce" and activeSampling_backend == "fixed_ce"
+    ce_only = bool(_paper_baseline_job()) or (_repr_mode() == "ce" and activeSampling_backend == "fixed_ce")
     logger.info(f"Embedding {total_rows} rows...")
     t0_emb = time.time()
     if ce_only:
@@ -3761,7 +3794,16 @@ def proxy_filter(
         repr_mode = _repr_mode()
         graph_features, lr_feats = embeddings, sim_features
         ce_scores = None
-        if activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
+        paper_query = None
+        baseline_job = _paper_baseline_job()
+        if baseline_job:
+            from ce_ranker import row_contents
+            graph_features, paper_query = _paper_baseline_representation(
+                None, row_contents(records, columns, image_cols), prompt, baseline_job, prof)
+            lr_feats = None
+            ce_scores = np.zeros(total_rows) if baseline_job["system"] == "LOTUS" else graph_features @ paper_query
+            filter_sims = ce_scores
+        elif activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
             if repr_mode == "biencoder":
                 if filter_sims is None:
                     raise ValueError("PROBE_REPR=biencoder needs the predicate-row cosine axis")
@@ -3808,6 +3850,7 @@ def proxy_filter(
                 activeSampling_backend=activeSampling_backend,
                 fixed_ce_config=fixed_ce_config,
                 fixed_ce_scores=ce_scores,
+                paper_query_embedding=paper_query,
                 n_strata=n_strata,
                 bas_pilot_ratio=bas_pilot_ratio,
                 allocation_method=allocation_method,
@@ -4209,7 +4252,7 @@ def proxy_join(
     sample_size, decision_mode, learned_calibration_config, defer_enabled = _resolve_paper_operator(
         total_pairs, sample_size, budget_size, sampling_method, activeSampling_backend,
         decision_mode, learned_calibration_config, defer_enabled, random_seed)
-    ce_only = _repr_mode() == "ce" and activeSampling_backend == "fixed_ce"
+    ce_only = bool(_paper_baseline_job()) or (_repr_mode() == "ce" and activeSampling_backend == "fixed_ce")
     ce_only = ce_only and int(os.environ.get("PROBE_BLOCKING_K", "0")) == 0
     # ---- Embedding Phase ----
     # Always embed left and right sides independently. All supported
@@ -4509,7 +4552,19 @@ def proxy_join(
         repr_mode = _repr_mode()
         graph_features, lr_feats = sampling_embeddings, sim_features
         ce_scores = None
-        if activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
+        paper_query = None
+        baseline_job = _paper_baseline_job()
+        if baseline_job:
+            from ce_ranker import row_contents
+            left_contents = row_contents(left_records, left_columns, image_cols)
+            right_contents = row_contents(right_records, right_columns, image_cols)
+            graph_features, paper_query = _paper_baseline_representation(
+                [left_contents[int(i)] for i,j in pair_indices],
+                [right_contents[int(j)] for i,j in pair_indices], prompt, baseline_job, prof)
+            lr_feats = None
+            ce_scores = np.zeros(n_pairs) if baseline_job["system"] == "LOTUS" else graph_features @ paper_query
+            join_sims = ce_scores
+        elif activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
             if repr_mode == "biencoder":
                 if join_sims is None:
                     raise ValueError("PROBE_REPR=biencoder needs the left-right cosine axis")
@@ -4562,6 +4617,7 @@ def proxy_join(
                 activeSampling_backend=activeSampling_backend,
                 fixed_ce_config=fixed_ce_config,
                 fixed_ce_scores=ce_scores,
+                paper_query_embedding=paper_query,
                 n_strata=n_strata,
                 bas_pilot_ratio=bas_pilot_ratio,
                 allocation_method=allocation_method,
