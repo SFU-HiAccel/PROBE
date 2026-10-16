@@ -1,1 +1,0 @@
-SELECT AVG(age) AS average_acne_age FROM patients WHERE text_diagnosis = 'acne';

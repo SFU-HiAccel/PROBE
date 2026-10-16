@@ -1,1 +1,0 @@
-Find hundred patients with malignant skin moles and cancer in the family history.

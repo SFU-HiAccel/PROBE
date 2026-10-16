@@ -12,7 +12,7 @@
 - Correct Animals Q1 to 1,600 physical image rows and binary F1. Preserve row IDs through evaluation.
 - Export scorer-aligned evaluation arrays, paired bootstrap intervals, ECE and all ten experiment figure/table families.
 - Bind resume and reporting to input, code, model and annotation identities.
-- Remove dynamic reranking and hybrid-pilot samplers, the learned-deferral router, the unused Spark JAR, unrelated workloads, workbook plots and obsolete environment snapshots.
+- Remove dynamic reranking and hybrid-pilot samplers, the learned-deferral router, the unused Spark JAR, unrelated workloads, workbook plots, bundled historical benchmark outputs and obsolete environment snapshots.
 
 ### Design Rationale
 - The current manuscript worktree, identified by file hashes, determines the released algorithm and workload configuration.
