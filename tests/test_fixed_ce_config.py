@@ -6,7 +6,7 @@ def test_runtime_default_and_seed():
     options=runtime_options(18,environ={})
     assert options['activeSampling_backend']=='fixed_ce'
     assert options['fixed_ce_config'].seed==18
-    assert options['fixed_ce_config'].batch_size==32
+    assert options['fixed_ce_config'].batch_size is None
     assert 'activeSampling_n_phases' not in options
 
 
@@ -17,8 +17,8 @@ def test_json_overrides_and_legacy_rejection():
     for key in ('LASO_N_PHASES','LASO_VS_RATIO'):
         with pytest.raises(ValueError,match='Obsolete'):
             runtime_options(environ={key:'1'})
-    legacy=runtime_options(environ={'PROBE_SAMPLING_BACKEND':'legacy','LASO_N_PHASES':'3'})
-    assert legacy['activeSampling_n_phases']==3
+    with pytest.raises(ValueError,match='legacy sampler was removed'):
+        runtime_options(environ={'PROBE_SAMPLING_BACKEND':'legacy'})
     assert runtime_options(sampling_method='random',environ={'LASO_N_PHASES':'3'})=={}
 
 

@@ -21,7 +21,7 @@ def main():
     a = p.parse_args()
     if a.dry_run:
         print(json.dumps(dict(profile="smoke", N_per_operation=4, preparation_budget=a.budget,
-                             sampling_budget=4*a.budget//5, operations=["filter", "join"],
+                             sampling_budget=3*a.budget//5, operations=["filter", "join"],
                              expert=a.model, oracle_url=a.oracle_url, device=a.device,
                              ce_revision="4bd860ac4f15ad1897a214615cccc700f8f71818"), indent=2)); return
     a.output.mkdir(parents=True, exist_ok=False)

@@ -51,6 +51,7 @@ def test_bargain_sweep_changes_target_with_fixed_preparation_budget():
 def test_low_selectivity_target_baselines_have_one_canonical_point():
     jobs=runner.plan(arguments(experiment='low_selectivity'))
     assert len(jobs)==15
+    assert {j['query'] for j in jobs} == {'cars_q7', 'ecomm_q6', 'movie_q5'}
     keys=[json.dumps(j,sort_keys=True) for j in jobs]
     assert len(set(keys))==len(keys)
     for system in ['BARGAIN-A','ScaleDoc','no_proxy']:
@@ -147,6 +148,28 @@ def test_csv_and_aiqa_preserve_acquired_labels(tmp_path,monkeypatch):
         result,profile,oracle,_=fixture(tmp_path,monkeypatch,'main',dict(budget_pct=10),system)
         for key,label in oracle.ledger.cache.items():assert result[key]==bool(label)
         assert profile['mode']==system
+
+
+def test_lotus_join_uses_similarity_without_helper_requests(tmp_path, monkeypatch):
+    from experiments.paper_pipeline import TimedOracle
+    from experiments.paper_baselines import execute_baseline
+    expert = ExpertFixture(80)
+    similarity = np.linspace(-.3, .95, 80)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Join must not invoke a filter helper endpoint')
+    monkeypatch.setattr('experiments.paper_baselines.lotus_cascade', forbidden)
+    mask, meta = execute_baseline(dict(system='LOTUS', operator='join', seed=0,
+        point={'target': .9}), similarity[:, None], np.ones(1), list(map(str, range(80))),
+        TimedOracle(expert), tmp_path)
+    assert mask.shape == (80,)
+    assert meta['proxy_requests'] == 0 and meta['proxy_kind'] == 'join_embedding_similarity'
+    for key, label in expert.ledger.cache.items():
+        assert mask[key] == bool(label)
+
+
+def test_lotus_plans_identify_operator():
+    jobs = runner.plan(arguments(systems=['LOTUS'], queries=['match113','cars_q7'], experiment='all'))
+    assert all(j['operator']=='join' for j in jobs if j['query']=='match113')
 
 
 def test_completed_measurement_rejects_failures_missing_gt_and_nonfinite():
@@ -251,3 +274,24 @@ def test_sampling_only_single_class_cannot_buy_full_oracle(tmp_path,monkeypatch,
     assert not mask.any()
     assert len(oracle.requests)<= (20 if system=='AIQA' else 16)
     assert not any(stage in ('fallback','D','A') for _,stage in oracle.requests)
+
+
+def test_lotus_calibration_samples_the_full_population(tmp_path):
+    from experiments.paper_pipeline import TimedOracle
+    from experiments.paper_baselines import lotus_join_cascade
+    expert=ExpertFixture(1000)
+    _,meta=lotus_join_cascade(np.linspace(.01,.99,1000),TimedOracle(expert),target=.9,seed=3)
+    assert meta['calibration_population']==1000
+    assert max(meta['sample_ids'])>200
+
+
+def test_input_digest_changes_when_prepared_contents_change(tmp_path):
+    data=tmp_path/'SemBench/files/animals';data.mkdir(parents=True)
+    file=data/'image_data.csv';file.write_text('id\n1\n')
+    args=arguments(data_root=tmp_path,lro_root=None,output=tmp_path/'outputs')
+    first=runner.input_identity(args)
+    file.write_text('id\n2\n')
+    assert runner.input_identity(args)['sha256']!=first['sha256']
+    (tmp_path/'unrelated.txt').write_text('not a dataset')
+    digest=runner.input_identity(args)
+    assert digest['file_count']==1

@@ -1,66 +1,66 @@
 {
-  "observed_at_utc": "2026-10-08T23:30:55.887086+00:00",
+  "observed_at_utc": "2026-10-16T21:17:42.543397+00:00",
   "source_worktree": "../PROBE-VLDB",
-  "source_head": "c5b2d862939ef4e8ee5b90be9fee9540602a4268",
+  "source_head": "67f02b52f416288f9a450aa73ad72b091e25d9de",
   "source_is_dirty": true,
-  "authority": "Current worktree bytes, including staged and unstaged edits; HEAD alone does not identify this manuscript.",
+  "authority": "Current worktree bytes, including uncommitted manuscript edits.",
   "appendix_status": "sections/09_appendix.tex exists but its input is commented out in main.tex. Audit separately from the active manuscript.",
   "files": {
     "main.tex": {
-      "sha256": "e51e133c2efea730b6503e3b05c785cfb9f2af50842fdbec10d0ff7097374d3d",
-      "bytes": 6830
+      "sha256": "6fc2159f1e5cdb403f1cfd86e770592054714419e5ef404516c46513b88debf4",
+      "bytes": 7278
     },
     "sample.bib": {
-      "sha256": "6251532d34aebf712af8376062ea14dd26af61ba131da1d6b07a1443272af979",
-      "bytes": 37719
+      "sha256": "665db9360e2e40e9d30eb1176b714bb0615889b44dfb7b79976ff6deb81c9575",
+      "bytes": 18985
     },
     "sections/00_abstract.tex": {
-      "sha256": "735a6e4b0711bbe268b23952f29ab39848a3a9151e914f8093d4da0fa6f12ba4",
-      "bytes": 1414
+      "sha256": "48cb7b71c83b0577b75937416aeed48f079e9bd069f1ee0248b74b4efca046da",
+      "bytes": 1805
     },
     "sections/01_introduction.tex": {
-      "sha256": "19da46d9612f9ece5a78e1a692da32dd59944add5cd76399151fcd916d378552",
-      "bytes": 12313
+      "sha256": "af6ed7465130638d554d154bfde370ba841a448061ead95c8c3c11d62585df43",
+      "bytes": 10633
     },
     "sections/02_background.tex": {
-      "sha256": "b7721f2f59f239b6bb3ccc37ec6930fc6b20f22dc12b20fc69851faca0a83b76",
-      "bytes": 4037
+      "sha256": "839c9c6fdaccb22d342254bf51ca2a28969b048b99371ec3d10c92a16ecf2e09",
+      "bytes": 3844
     },
     "sections/03_sampling.tex": {
-      "sha256": "17acd982df4385f60c29f555fc7080b3c48d0e040c115712716b134bee05fd7f",
-      "bytes": 20019
+      "sha256": "ed5131bc8989e47ae502a6e7ebbcfa95c4cffa8c693a829d9603321a3c9668f6",
+      "bytes": 20386
     },
     "sections/04_label_propagation.tex": {
-      "sha256": "f529642aff067dc10e7eb26c59a42d4b9ee05f3eb8f6fbea21d68c4229b3b98e",
-      "bytes": 7050
+      "sha256": "e4917af0bdb2251b26aafd32f2bec4d8cffcad9c6a689fd54724940c64644f01",
+      "bytes": 4833
     },
     "sections/05_learned_guided_fallback.tex": {
-      "sha256": "3133c40bf6084231c8529220f389fc9f3da11544f8fa3aa63e4663f24d540835",
-      "bytes": 12809
+      "sha256": "8210049795a8f48d016420793fe8544380cc01e347d82ac6015356c076ffd7ae",
+      "bytes": 12358
     },
     "sections/06_evaluation.tex": {
-      "sha256": "5792d381459e730d3b450bbe8a44a4102cb7000ea3cc2cd6ecfdfe91199878c9",
-      "bytes": 20887
+      "sha256": "aa51b575e1ea9b54de492f76197f03e727b26d81dd6b92d8f97e98f3f3995ea8",
+      "bytes": 21375
     },
     "sections/07_related_work.tex": {
-      "sha256": "574209a87564dab052a5c644e62bf2bd128ecc5069bcb67cb01de1d876a92bef",
-      "bytes": 1589
+      "sha256": "c99495b1e5a183550530e860b1022e7d37fa794122bf9ca104a59079339654d6",
+      "bytes": 1606
     },
     "sections/08_conclusion.tex": {
-      "sha256": "1ab8c01d42923e488578214887ce709cfaa20648a68682e9e81ce88852721975",
-      "bytes": 481
+      "sha256": "a618259c41013b73e8e9432741fd311e2e23e15e5757e2e87ba218707293b67e",
+      "bytes": 422
     },
     "sections/09_appendix.tex": {
-      "sha256": "b4ef085a749cc977fab87374986b4f2099446181012a25709f3b24ea4d306d22",
-      "bytes": 15244
+      "sha256": "103f157c3429c1fd63a323279f4947f3f273ebd8bcf0a8e52cee711bb9ab9975",
+      "bytes": 15754
     },
     "figures/sas_flow.tex": {
-      "sha256": "0790f5827f90e0f28829aa1cf1ac1cd1136130ec78748809ffb880a1868c4646",
-      "bytes": 2859
+      "sha256": "47ef2521bee35ea5108101fa43da80118a07122c905ee6535b97b37b8cfbad01",
+      "bytes": 2698
     },
     "tables/best_points.tex": {
-      "sha256": "5ce50250ac7f8bf9ac7d4ec3d82f61fe69e6f9f8392eb494cc35f822e3c86f24",
-      "bytes": 4954
+      "sha256": "44c291f6a01ed23c912001eb6d925ea1d521f0f7e759beb8d9cee3923aaf511d",
+      "bytes": 4998
     },
     "figures/Algo3.pdf": {
       "sha256": "f49ce6878d3677c8ababca5d79bf8000d5874b6cfe7d49dcfc78ec510046840f",
@@ -75,12 +75,12 @@
       "bytes": 189826
     },
     "figures/all_queries.pdf": {
-      "sha256": "805f21e962ff3f82d6e3ffd086ab64d3545d33db7a13c832ead78ebbb5acecc0",
-      "bytes": 50797
+      "sha256": "03a6a28586cbee55496834fe78b7aef06e93cea7c71bab73ef0034fa8af4f90c",
+      "bytes": 50793
     },
     "figures/alpha_tradeoff.pdf": {
-      "sha256": "1fec91d9373c388ad0a0bbdd8ec4effb7835a51ad1c7daab68c24697f6454a11",
-      "bytes": 17470
+      "sha256": "9b0ffabacbc8f227876ae8f75c3369163cd5db2e651964c64ff86f2e1d488c75",
+      "bytes": 16959
     },
     "figures/calib_gamcal_case.pdf": {
       "sha256": "70119a83589f6ca17fbaecbb82c59a04b974a238ac8d753f5f6655da08c114bd",
@@ -115,8 +115,8 @@
       "bytes": 52300
     },
     "figures/fig_sys_quality.pdf": {
-      "sha256": "7377f8a01aad2ff76a5c08f10f8a28e910ee85e6e282dc30fc567b202801b900",
-      "bytes": 56240
+      "sha256": "747dc568f39ebf2c6dfb085aa1dd18fd1b0ab1e1df0c3ec0880180b134815667",
+      "bytes": 56200
     },
     "figures/fig_sys_quality_gemma4.pdf": {
       "sha256": "84510cdc445df055083193a0472c53ba4826624098072c4b898ab276c7d26cd3",
@@ -159,47 +159,16 @@
       "bytes": 58380
     },
     "figures/sas_windows_by_round.pdf": {
-      "sha256": "57ca029202ef9c4c466e44e006f69a017560f7b01656c7855cc8607e13ab6964",
-      "bytes": 169423
+      "sha256": "ce8f36e3cb1f8c9df3c801c50cecb0a8328c8429df231bba124495e4e97bd301",
+      "bytes": 170447
     },
     "figures/workflow.pdf": {
-      "sha256": "79b3f426b4f10dd549579037c5b1d64d305d2baec69a61abed7eb962aa2a39be",
-      "bytes": 436285
+      "sha256": "0d0ff8fc3a23636b74211100a9b7711f2f163bcce51e62a8bf668aa2ba8d20f7",
+      "bytes": 436337
     },
     "tables/case_study.tex": {
       "sha256": "b83b57e1610582fe01d77a84766a72c7ae38b1868b68dfa9969c8eec3bee778a",
       "bytes": 742
     }
-  },
-  "latest_verification": {
-    "verified_at_utc": "2026-10-08T20:56:28.747353+00:00",
-    "source_head": "815f9fb3b5b60079de7d56608c4a85f26369d643",
-    "source_is_dirty": true,
-    "hashed_files_checked": 41,
-    "content_changed_since_snapshot": false,
-    "note": "Refreshed hashes after reading revisions to sampling, graph refinement, calibration and evaluation. Algorithm defaults and experiment grids remain consistent with the prompt. Updated baseline-summary claims and captured revised time-breakdown figure."
-  },
-  "previous_snapshot": {
-    "observed_at_utc": "2026-10-08T18:21:23.780252+00:00",
-    "source_head": "e2325c6245146a4ef8a5c8308507403859bf182a",
-    "last_verified_source_head": "e2325c6245146a4ef8a5c8308507403859bf182a",
-    "changed_inputs": [
-      "sections/00_abstract.tex",
-      "sections/01_introduction.tex",
-      "sections/02_background.tex",
-      "sections/03_sampling.tex",
-      "sections/04_label_propagation.tex",
-      "sections/05_learned_guided_fallback.tex",
-      "sections/06_evaluation.tex",
-      "sections/07_related_work.tex",
-      "sections/08_conclusion.tex",
-      "figures/sas_flow.tex",
-      "figures/fig_time_breakdown.pdf"
-    ]
-  },
-  "rechecked_changes": [
-    "sections/06_evaluation.tex",
-    "tables/best_points.tex",
-    "figures/all_queries.pdf"
-  ]
+  }
 }

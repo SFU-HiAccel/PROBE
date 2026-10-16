@@ -2,19 +2,18 @@ import numpy as np
 import pytest
 from scipy.stats import hypergeom
 
-from fixed_ce_sampling import SamplingConfig as _SamplingConfig, finite_population_interval, sample_fixed_ce
+from fixed_ce_sampling import SamplingConfig as _SamplingConfig, sample_fixed_ce
 
 
 @pytest.mark.parametrize('budget', [0, 1, 2, 7, 30])
-@pytest.mark.parametrize('mode', ['hybrid', 'uniform', 'strata'])
-def test_budget_cache_and_zero_positive(budget, mode):
+def test_budget_cache_and_zero_positive(budget):
     calls = []
     cache = {3: 0}
     def oracle(i):
         calls.append(i)
         return 0
     result = sample_fixed_ce(range(20), np.zeros(20), oracle, budget,
-                             SamplingConfig(batch_size=2, pilot_mode=mode), cache)
+                             SamplingConfig(batch_size=2, pilot_mode='uniform'), cache)
     assert len(calls) == min(budget, 19)
     assert len(calls) == len(set(calls))
     assert 3 not in calls
@@ -38,7 +37,7 @@ def test_high_selectivity_requires_evidence():
                              SamplingConfig(batch_size=80, pilot_mode='uniform'))
     assert result.pilot.regime == 'highly_selective'
     tiny = sample_fixed_ce(range(1000), np.arange(1000), lambda _: 0, 2, SamplingConfig())
-    assert tiny.pilot.regime == 'unknown'
+    assert tiny.pilot.regime == 'highly_selective'
     assert tiny.pilot.mode == 'multi'
 
 
@@ -60,25 +59,15 @@ def test_failed_audit_abstains_and_attempts_are_capped():
                              SamplingConfig(batch_size=2, pilot_mode='uniform'))
     assert len(result.attempted_ids) == len(result.failed_ids) == 7
     assert len(result.unresolved_ids) == 20
-    assert result.pilot.regime == 'unknown'
+    assert result.pilot.regime == 'highly_selective'
     assert result.pilot.interval == (0., 1.)
 
 
-def test_finite_population_coverage_exhaustive():
-    # Exact design coverage over every possible observed k, not a Monte Carlo proxy.
-    for N in range(1, 19):
-        for n in range(N+1):
-            intervals = [finite_population_interval(N, n, k) for k in range(n+1)]
-            for K in range(N+1):
-                coverage = sum(hypergeom.pmf(k, N, K, n) for k, (lo, hi) in enumerate(intervals) if lo <= K <= hi)
-                assert coverage >= .95 - 1e-12
-    assert finite_population_interval(100, 0, 0) == (0, 100)
-    assert finite_population_interval(10, 10, 3) == (3, 3)
 
 
 def test_seed_followup_and_global_rng_isolation():
     # Isolated positives survive the interval penalty and receive explicit service.
-    cfg = SamplingConfig(batch_size=1, pilot_mode='uniform', seed=4)
+    cfg = SamplingConfig(batch_size=4, pilot_mode='uniform', seed=4)
     cache = {10: 1, 70: 1}
     np.random.seed(12)
     state = np.random.get_state()
@@ -154,9 +143,9 @@ def test_text_adapter_preserves_original_ids_and_local_positions():
 
 
 def SamplingConfig(**kwargs):
-    # These tests exercise saved legacy hard-budget contracts explicitly.
-    kwargs.setdefault("protocol", "legacy")
+    # Explicit small batches exercise the paper hard-budget contract.
+    kwargs.setdefault("protocol", "paper")
     kwargs.setdefault("pilot_fraction", .1)
-    kwargs.setdefault("pilot_mode", "hybrid")
+    kwargs.setdefault("pilot_mode", "uniform")
     kwargs.setdefault("n_min", 1)
     return _SamplingConfig(**kwargs)

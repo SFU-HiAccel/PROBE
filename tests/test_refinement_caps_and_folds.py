@@ -52,14 +52,13 @@ def test_early_exit_still_wins_below_the_cap():
     """A high cap must not force iterations: the recorded count is convergence, not the cap."""
     emb, W, li, lv = _ring_graph()
     _, _, prof = cluster_proxy.predict_with_score_refinement(
-        emb, W, li, lv, confidence_threshold=0.5, num_iter=500,
+        emb, W, li, lv, confidence_threshold=0.5, num_iter=500, tol=1e-4,
     )
     assert prof["bias_diffusion_iters"] < 500
     assert prof["homogeneity_propagation_cap"] == 500
 
 
-@pytest.mark.parametrize("fn", ["cluster_proxy_pipeline", "_run_learned_calibration_stage",
-                                "_compute_oof_z_smooth_and_corrected"])
+@pytest.mark.parametrize("fn", ["cluster_proxy_pipeline", "_run_learned_calibration_stage"])
 def test_caps_are_threaded_through_the_pipeline(fn):
     params = inspect.signature(getattr(cluster_proxy, fn)).parameters
     assert "refine_t1" in params and "refine_t2" in params

@@ -32,7 +32,7 @@ def test_public_spark_fixed_axis_and_budget(spark,monkeypatch,kind,scenario):
     calls=[];scored=[]
     def forbidden(*args,**kwargs):
         raise AssertionError('dynamic sampling reached from fixed CE public wrapper')
-    monkeypatch.setattr(cp,'sample_activeSampling',forbidden)
+    assert not hasattr(cp,'sample_activeSampling')
     monkeypatch.setattr(cp,'_KNN_CACHE_ENABLED',False)
     def embeddings(rows,*args,**kwargs):
         return np.random.default_rng(3).normal(size=(len(rows),5))
@@ -95,15 +95,15 @@ def test_public_spark_fixed_axis_and_budget(spark,monkeypatch,kind,scenario):
         assert sampling['sort_count']==1
         assert sampling['_fixed_order'].tolist()==list(range(23,-1,-1))
     if scenario!='mixed':
-        assert count==0 and cluster['result_status']=='abstain'
+        assert count==0 and cluster['result_status']=='llm_executed_with_failures'
         assert cluster['quality_certificate'] is None
         if scenario=='failure':assert len(cluster['unresolved_ids'])==24
 
 
 def SamplingConfig(**kwargs):
-    # These tests exercise saved legacy hard-budget contracts explicitly.
-    kwargs.setdefault("protocol", "legacy")
+    # Explicit small batches exercise the paper hard-budget contract.
+    kwargs.setdefault("protocol", "paper")
     kwargs.setdefault("pilot_fraction", .1)
-    kwargs.setdefault("pilot_mode", "hybrid")
+    kwargs.setdefault("pilot_mode", "uniform")
     kwargs.setdefault("n_min", 1)
     return _SamplingConfig(**kwargs)

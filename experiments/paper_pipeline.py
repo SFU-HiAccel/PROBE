@@ -76,7 +76,10 @@ def acquire(features, scores, texts, oracle, budget, sampler, config):
 
 def frozen_sample(job, features, scores, texts, oracle, budget, config, output):
     """One locked acquisition per exact label-free input/protocol/model identity."""
-    identity = dict(query=job['query'], seed=job['seed'], budget=budget,
+    request = oracle.oracle.request_factory() if hasattr(oracle.oracle,'request_factory') else None
+    request_config = {k:getattr(request,k,None) for k in (
+        'model','base_url','system_prompt','max_tokens','temperature','extra_body','timeout')}
+    identity = dict(query=job['query'], seed=job['seed'], budget=budget, request=request_config,
                     model=job['model'], revision=job['model_revision'], oracle_url=job['oracle_url'],
                     features=hashlib.sha256(np.ascontiguousarray(features).tobytes()).hexdigest(),
                     scores=hashlib.sha256(np.asarray(scores).tobytes()).hexdigest(),
@@ -84,7 +87,8 @@ def frozen_sample(job, features, scores, texts, oracle, budget, config, output):
                     config=vars(config), code={name:hashlib.sha256(
                         (Path(__file__).resolve().parents[1]/name).read_bytes()).hexdigest()
                         for name in ('experiments/paper_pipeline.py','fixed_ce_sampling.py',
-                                     'threshold_search_multi.py','oracle_budget.py')})
+                                     'sampling_strata.py','stratified_calibration.py',
+                                     'threshold_search_multi.py','oracle_budget.py','proxy_model.py')})
     identity = json.loads(json.dumps(identity, sort_keys=True))
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
     root = Path(os.environ['PROBE_FROZEN_ROOT']) / key
@@ -140,7 +144,7 @@ def execute(features, texts, factory, sample_size, scores, config, calibration_c
     np.random.seed(config.seed)
     random.seed(config.seed)
     budget = int(calibration_config.total_budget)
-    training_budget = (4*budget)//5
+    training_budget = calibration_config.sample_budget
     prof = dict(n_total=n, random_seed=job['seed'], result_status='returned',
                 paper_experiment=job['experiment'], paper_system=job['system'])
     stages = dict(sampling=0., expert_calls=0., proxy_training=0., proxy_prediction=0.,
@@ -204,7 +208,7 @@ def execute(features, texts, factory, sample_size, scores, config, calibration_c
                 stages['refinement'] = time.perf_counter()-begin
                 mask, refined, rp = predict_with_score_refinement(
                     features, graph, ids, labels, .5, alpha=.8, beta=.8,
-                    num_iter_bias=50, num_iter_prop=0 if stage == 'bias' else 50,
+                    num_iter_bias=50, num_iter_prop=0 if stage == 'bias' else 50, tol=0.,
                     imbalance_strategy='balanced', lr_C=1., return_logit=True)
                 if stage == 'bias':
                     refined = np.asarray(rp['z_corrected'])
@@ -234,7 +238,7 @@ def execute(features, texts, factory, sample_size, scores, config, calibration_c
                         features, graph, texts, labels_for_stage, ids, labels, mask, rp['lr_logit'],
                         config=cfg, refined_score=refined, confidence_threshold=.5,
                         diffusion_alpha=.8, propagation_beta=.8, refine_num_iter=50,
-                        refine_t1=50, refine_t2=50, refine_tol=1e-4, refine_patience=5,
+                        refine_t1=50, refine_t2=50, refine_tol=0., refine_patience=5,
                         imbalance_strategy='balanced', lr_C=1., base_threshold=None, profiling=prof)
                 stages['calibration'] = max(0., time.perf_counter()-begin-(oracle.seconds-before_calls))
             mask[ids] = labels.astype(bool)

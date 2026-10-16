@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from scipy.stats import hypergeom
 
-from fixed_ce_sampling import (SamplingConfig, _stratum_quota, one_sided_lower, one_sided_upper,
+from fixed_ce_sampling import (SamplingConfig, _stratum_quota, one_sided_lower,
                                paper_config, sample_fixed_ce)
 
 
@@ -11,13 +11,6 @@ def paper(**kw):
     return SamplingConfig(protocol='paper', pilot_mode='uniform', pilot_fraction=.2, **kw)
 
 
-@pytest.mark.parametrize('N,n,k', [(1000, 40, 0), (1000, 40, 3), (50, 50, 5), (200, 10, 10)])
-def test_one_sided_upper_is_largest_consistent_K(N, n, k):
-    K = one_sided_upper(N, n, k, .05)
-    assert hypergeom.cdf(k, N, K, n) > .05
-    if K < N - n + k:
-        assert hypergeom.cdf(k, N, K + 1, n) <= .05
-    assert one_sided_upper(N, 0, 0) == N
 
 
 def test_pilot_has_no_batch_minimum_and_gate_is_once():
@@ -117,7 +110,8 @@ def test_cache_is_free_and_public_default_is_paper():
                     paper(batch_size=8), cache)
     assert not set(calls) & set(range(50)) and len(calls) == 40
     assert SamplingConfig().protocol == 'paper'
-    assert SamplingConfig(protocol='legacy').protocol == 'legacy'
+    with pytest.raises(ValueError,match='paper sampling'):
+        SamplingConfig(protocol='legacy')
 
 
 def test_explore_phase_needs_n_min_positives():

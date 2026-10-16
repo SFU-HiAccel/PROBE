@@ -1,23 +1,30 @@
-# Algorithm alignment
+# Algorithm mapping
 
-Authority: manuscript worktree at `c5b2d86`, with 41 input hashes in `manuscript_snapshot.json`. The disabled appendix is separate. Since `815f9fb`, evaluation prose, the best-point table and tradeoff PDF changed; algorithm formulas did not.
+Authority: current manuscript worktree at `67f02b5`, including uncommitted edits.
+File hashes are in `manuscript_snapshot.json`. The appendix is disabled in the
+manuscript and does not override the main text.
 
-| Paper requirement | Effective implementation | Change/evidence |
+| Manuscript requirement | Code | Implementation |
 | --- | --- | --- |
-| Fixed predicate-aware axis and same-pass hidden state | `ce_ranker.score_filter/score_join`, `proxy_model._reduce_rows` | Public default CE; skip unused SigLIP pass. Qwen revision pinned to `4bd860ac4f15ad1897a214615cccc700f8f71818`. Named columns and original row/pair IDs stay aligned. Cache includes model/content/backend identity. CE tests and real Spark smoke. |
-| L2 then PCA256 | `_reduce_rows` | L2 before PCA and after projection; rank min(256,d,N−1). N<=1 retains at most256 normalized coordinates instead of fitting degenerate PCA. Population features, no labels, fit PCA. |
-| Preparation budget | `paper_calibration_config`, budget properties, `PreparationLedger` | Exact integer split `(4B)//5`, `B-B_L`, including B0/1; no ten-label floor. D/fallback outside allowance. Tests cover B0..20, caching and failures. |
-| Algorithms1–2 / Eq. gate | `SamplingConfig`, `_paper_sas`, `one_sided_lower` | Default paper/uniform/.3/n_min2. Strict lower-bound >.05, permanent branch, no pilot batch minimum. Legacy tests explicitly select legacy. |
-| SAS branches | `sampling_strata`, `threshold_search_multi`, `_paper_sas` | Geometric strata, bounded quotas, pilot Neyman/minimum exploration; carried .25 exploration, scan until2 positives, DP penalty1.5/max6, windows and seed service. Exact bounds/quota/trace tests. Population quality remains experimental. |
-| S3 missing either class | `_whole_query_llm_fallback` | Retain known labels; skip later stages; uncapped stable-ID fallback. Real B2 filter/join each made4 unique calls: L1/fallback3, no failures. |
-| Balanced L2 LR C1 | LR fit/refinement, public operator flags | Paper harness sets balanced weights/C1. Sampler-ablation tests verify LR-only behavior. |
-| Gaussian symmetric graph and row-normalized P | `build_knn_graph`, `predict_with_score_refinement` | Residual pinning, label pinning, damping .8/.8, iterations50/50, threshold .5. Fold refinement excludes held-out anchors. |
-| kNN conflict | `auto_knn_k` | Active table round(3log2N); disabled appendix cap5/50. Default follows active body, bounded by N−1. Historical cap requires `PROBE_KNN_PROTOCOL=legacy`. Historical experiment provenance must be reconciled. |
-| Refined-score calibration strata | `run_learned_calibration`, `StratifiedDesign` | A uses refined probability, not LR probability. Merge to at most min(10,ceil(.2m)) strata so the even share samples every stratum. Within-stratum SRSWOR, weights N_j/n_j, remaining Neyman share. |
-| Cross-fitting | `compute_oof_features`, `refine_fn` | min(5,n_pos,n_neg) folds; LR/refinement rebuilt per fold. Missing OOF omits L loss; A-only fit needs observed class evidence. No zero-A CP shape from unavailable OOF. |
-| Eq. platt/loss | `calibrate(paper=True)` | Nonnegative slope/intercept/L-only xi; h coefficient fixed0; only .5xi² ridge. Smoothed targets use pooled A/L class counts. Independent three-parameter reference optimization agrees. |
-| Eq. anchor / failure | `fit_intercept_shift`, `stratified_positive_target` | A-only inverse-weighted anchor, omit xi at inference. CP .15/.05 is a heuristic. Failed fit preserves refined labels and verified L/A labels. |
-| Eq. counts/objective/two-threshold | `expected_counts`, `plan_dual_threshold` | Refined labels, opposing prefixes, Dinkelbach, alpha .5; alpha0 no routing. Brute-force tests verify objective/counts. |
-| Public defaults / CLI | public operators, `run.py`, `reproduce.py` | Paper SAS and learned calibration resolve preparation B; explicit old/ablation decisions remain. Dry-run records protocol, revisions, workload N and seeds. |
+| Fixed predicate-aware ranking and same-pass features | `ce_ranker.py`, `proxy_model._reduce_rows` | Qwen3-VL-Reranker-2B scores and last-token states, L2 normalization and PCA256 |
+| Preparation budget | `paper_calibration_config`, `PreparationLedger` | `L = floor(3B/5)`, `A = B-L`, routing and S3 outside B |
+| SAS pilot and gate | `fixed_ce_sampling.py` | Uniform pilot `floor(0.3 B_L)`, one-sided hypergeometric bound, strict lower-bound `> 0.05` |
+| SAS batch cap | `SamplingConfig`, `sample_fixed_ce` | `max(1, floor(0.01 N))`, explicit batch300 for the trace figure |
+| Stratified branch | `_stratum_quota`, `geometric_strata` | Pilot Neyman weights, minimum stratum exploration, capacity-bounded quotas |
+| Multi-interval branch | `threshold_search_multi.py`, `_paper_sas` | 25% uniform exploration, scan until two positives, DP penalty1.5, cap6, shrinking windows and seed service |
+| S3 | `_whole_query_llm_fallback` | Retain purchased labels and evaluate remaining candidates when training lacks either class |
+| Proxy | `predict_with_score_refinement` | Class-balanced L2 logistic regression, C1 |
+| Graph | `_build_knn_graph` | Unit embeddings, Gaussian weights, union of directed kNN edges, median kth-neighbor distance, no self edges |
+| Refinement | `predict_with_score_refinement` | Row-normalized P, residual pinning, corrected-score pinning and propagated-label pinning, damping0.8, exactly50 iterations per phase |
+| Calibration sampling | `StratifiedDesign`, `allocate_neyman` | Equal-width refined-score bins, adjacent merges until H<=m, floor `max(H, ceil(0.2m))`, Neyman remainder, SRSWOR weights `N_j/n_j` |
+| Cross-fitting | `compute_oof_features` | `min(5,n_pos,n_neg)` folds, fold-specific LR and refinement, held-out labels excluded |
+| Platt model and loss | `weighted_calibrator._calibrate_paper` | Shared nonnegative slope and independent A/L intercepts, `sum_A omega/mean(omega) BCE + sum_L BCE`, no ridge |
+| Label smoothing | `_calibrate_paper` | Hard labels on A, Platt targets on L using L's class counts |
+| Weighted balance | `fit_intercept_shift` | A-only first-order intercept equation. With zero-positive A, fit L alone and anchor to the0.15 CP heuristic. Stratum IDs are preserved even when weights coincide |
+| Calibration failure | `run_learned_calibration` | Keep refined labels and all verified labels, no extra sampling rounds in paper mode |
+| Routing | `budgeted_calibrated_router.py` | Expected TP/FP/FN, alpha0.5 objective, opposing prefixes and Dinkelbach search |
 
-See `validation.md`. Contracts and smoke do not establish paper quality/speedups. Frozen-L ablation and seven-stage timing remain experiment-level gaps in `experiment_alignment.md`.
+`tests/test_paper_defaults.py` compares calibration to an independent numerical
+objective and checks allocation and batch behavior. `tests/test_manuscript_graph_workload.py`
+checks the graph equations, refinement phases and Cars Q7 workload. Other tests
+cover the sampler, routing objective, oracle failures and public Spark operators.

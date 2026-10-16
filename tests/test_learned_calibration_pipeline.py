@@ -34,8 +34,8 @@ def _factory(y, calls):
 def _run(emb, sims, texts, factory, **kw):
     return cp.cluster_proxy_pipeline(
         emb, texts, factory, sampling_method="activeSampling", similarities=sims,
-        refine_enabled=True, defer_enabled=True, activeSampling_n_phases=5,
-        activeSampling_backend="legacy",  # historical router wiring regression
+        refine_enabled=True, defer_enabled=True, fixed_ce_scores=sims,
+        activeSampling_backend="fixed_ce",
         random_seed=0, knn_k=10, **kw)
 
 
@@ -49,8 +49,9 @@ class TestPredictWithScoreRefinementLogit:
                                                             return_logit=True)
         assert "lr_logit" not in prof0
         assert np.array_equal(mask0, mask1) and np.allclose(z0, z1)
-        # z_corrected keeps the raw LR probability on labelled rows
-        assert np.allclose(expit(prof1["lr_logit"][idx]), prof1["z_corrected"][idx])
+        # Algorithm 3 retains expert labels in both corrected and final scores.
+        assert np.array_equal(y[idx], prof1["z_corrected"][idx])
+        assert np.array_equal(y[idx], z1[idx])
 
     def test_single_class_labels_give_no_logit(self):
         emb, _, _, _ = _synthetic()
@@ -76,17 +77,6 @@ class TestPipelineSwitch:
         assert len(calls) <= max(cfg.total_budget, prof["n_labeled"])
         assert "lr_logit" not in prof["refinement_profiling"]
 
-    def test_learned_deferral_path_never_touches_learned_calibration(self, monkeypatch):
-        def _boom(**_):
-            raise AssertionError("learned calibration must stay off")
-        monkeypatch.setattr(learned_calibration, "run_learned_calibration", _boom)
-        emb, sims, texts, y = _synthetic()
-        calls = []
-        mask, prof = _run(emb, sims, texts, _factory(y, calls), sample_size=60,
-                          decision_mode="learned_deferral", router_max_calls=20)
-        assert prof["defer_decision_mode"] == "learned_deferral"
-        assert not any(k.startswith("lc_") for k in prof)
-        assert "lr_logit" not in prof["refinement_profiling"]
 
     def test_missing_config_is_rejected(self):
         emb, sims, texts, y = _synthetic()

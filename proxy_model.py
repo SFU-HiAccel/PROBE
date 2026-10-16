@@ -1793,7 +1793,7 @@ def _paper_baseline_job():
 
 
 def _paper_baseline_representation(left, right, predicate, job, prof):
-    if job["system"] == "LOTUS":
+    if job["system"] == "LOTUS" and left is None:
         # LOTUS's proxy makes actual token-logprob requests; it does not use
         # PROBE's encoder. The dummy shape only transports candidate alignment.
         return np.zeros((len(right), 1), np.float32), np.zeros(1, np.float32)
@@ -1814,10 +1814,9 @@ def _repr_mode() -> str:
 
 
 def _reduce_rows(x: np.ndarray, rank: int = CE_HIDDEN_RANK) -> np.ndarray:
-    """L2-normalise rows, PCA-project to at most `rank` dims (fitted on these rows), re-normalise.
+    """L2-normalise hidden states, then fit PCA for the LR representation.
 
-    Used for cross-encoder hidden states (1.5k-2k dims): the proxy is trained on a few dozen labels
-    and the kNN graph uses Euclidean distance, so both need a compact, unit-scaled representation.
+    The graph normalises its own copy of these features separately.
     """
     x = np.asarray(x, dtype=np.float32)
     x = x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
@@ -1827,7 +1826,6 @@ def _reduce_rows(x: np.ndarray, rank: int = CE_HIDDEN_RANK) -> np.ndarray:
     if r < x.shape[1]:
         from sklearn.decomposition import PCA
         x = PCA(n_components=r, random_state=0).fit_transform(x).astype(np.float32)
-        x = x / np.maximum(np.linalg.norm(x, axis=1, keepdims=True), 1e-12)
     return x
 
 
@@ -2606,317 +2604,6 @@ def _compute_similarities(
     )
 
 
-def sample_stratified(
-    embeddings: np.ndarray,
-    prompt_embedding: np.ndarray,
-    texts: List[Union[str, list]],
-    sample_size: int,
-    model: str,
-    url: str,
-    system_prompt: str = FILTER_SYSTEM_PROMPT,
-    max_tokens: int = 16,
-    temperature: float = 0.0,
-    max_concurrent_requests: int = 256,
-    n_strata: int = 5,
-    n_rounds: int = 5,
-    budget: Optional[dict] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Adaptive stratified active sampling with importance weighting and
-    variance-based budget allocation.
-
-    Three key mechanisms:
-      1. Strata partition by cosine-similarity quantiles.
-      2. Seed round uniform → then Neyman variance-based allocation:
-         budget_k ∝ |S_k| × σ_k.  Strata with high label variance
-         (boundary regions) get more LLM budget; pure strata get none.
-      3. Importance weighting: low-similarity rows that turn out positive
-         get higher training weight (inverse-propensity style), because
-         they are rare false-negative signals critical for proxy quality.
-
-    Returns:
-        (indices, labels, sample_weights)
-        sample_weights[i] = training weight for row i.  Low-similarity
-        positives get weight > 1 (up-weighted); high-similarity negatives
-        get weight ≈ 1 (neutral).
-    """
-    total = len(texts)
-    sample_size = min(sample_size, total)
-
-    # --- Partition into strata by similarity ---
-    similarities = _compute_similarities(embeddings, prompt_embedding)
-    quantiles = np.linspace(0, 1, n_strata + 1)
-    thresholds = np.quantile(similarities, quantiles)
-    row_strata = np.digitize(similarities, thresholds[1:-1])  # 0..n_strata-1
-
-    # Pre-compute rows per stratum
-    stratum_rows = [np.where(row_strata == k)[0] for k in range(n_strata)]
-
-    labeled_set: set = set()
-    all_indices: List[int] = []
-    all_labels: List[int] = []
-
-    # Per-stratum variance (initialized uniform; updated after seed round)
-    stratum_variance = np.ones(n_strata, dtype=float) * 0.25  # max variance for binary
-
-    # Budget per round
-    round_budget = max(1, sample_size // n_rounds)
-
-    # Current proxy model (None until first fit after seed round)
-    current_lr = None
-
-    def _fit_proxy():
-        """Fit proxy on current labeled data, return (model, f1)."""
-        lab = np.array(all_labels, dtype=np.int32)
-        if len(lab) < 2 or len(np.unique(lab)) < 2:
-            return None, 0.0
-        idx = np.array(all_indices)
-        lr = LogisticRegression(
-            class_weight="balanced", max_iter=500, solver="lbfgs",
-        )
-        lr.fit(embeddings[idx], lab)
-        preds = lr.predict(embeddings[idx])
-        f1 = float(f1_score(lab, preds, average="macro", zero_division=0))
-        return lr, f1
-
-    def _select_within_stratum(
-        stratum_unlabeled: np.ndarray, budget_k: int, lr_model,
-    ) -> np.ndarray:
-        """Select the most informative rows within a stratum."""
-        n_select = min(budget_k, len(stratum_unlabeled))
-        if n_select <= 0:
-            return np.array([], dtype=int)
-
-        if lr_model is None or len(np.unique(np.array(all_labels, dtype=np.int32))) < 2:
-            return np.random.choice(stratum_unlabeled, n_select, replace=False)
-
-        probas = lr_model.predict_proba(embeddings[stratum_unlabeled])
-        pos_cls = list(lr_model.classes_).index(1) if 1 in lr_model.classes_ else 0
-        pos_p = probas[:, pos_cls]
-
-        num_definite = int(np.sum(np.array(all_labels) == 1))
-        num_unknown = total - len(all_indices)
-        if num_definite > 0 and num_unknown > 0:
-            eer = _compute_eer_scores(pos_p, num_definite, num_unknown)
-            top_idx = np.argsort(eer)[-n_select:]
-        else:
-            uncertainty = 1.0 - np.abs(pos_p - 0.5) * 2
-            top_idx = np.argsort(uncertainty)[-n_select:]
-
-        return stratum_unlabeled[top_idx]
-
-    def _sample_from_stratum_active(
-        k: int, budget_k: int, lr_model,
-    ) -> Tuple[int, int]:
-        """Select and label rows from stratum k using active learning."""
-        unlabeled = np.array([i for i in stratum_rows[k] if i not in labeled_set])
-        if len(unlabeled) == 0 or budget_k <= 0:
-            return 0, 0
-
-        selected = _select_within_stratum(unlabeled, budget_k, lr_model)
-        if len(selected) == 0:
-            return 0, 0
-
-        selected_texts = [texts[i] for i in selected]
-        selected_labels = label_rows_with_llm(
-            selected_texts, model, url, system_prompt,
-            max_tokens, temperature, max_concurrent_requests,
-            budget=budget,
-        )
-        all_indices.extend(selected.tolist())
-        all_labels.extend(selected_labels.tolist())
-        labeled_set.update(selected.tolist())
-        return len(selected), int((selected_labels == 1).sum())
-
-    def _compute_stratum_variance():
-        """Compute per-stratum label variance σ²_k = p_k(1-p_k)."""
-        for k in range(n_strata):
-            stratum_labeled = [
-                all_labels[j] for j, idx in enumerate(all_indices)
-                if row_strata[idx] == k
-            ]
-            if len(stratum_labeled) >= 2:
-                p_k = np.mean(stratum_labeled)
-                stratum_variance[k] = p_k * (1 - p_k)
-            else:
-                stratum_variance[k] = 0.25  # unknown → assume max variance
-
-    for rnd in range(n_rounds):
-        remaining = sample_size - len(all_indices)
-        if remaining <= 0:
-            break
-        if _budget_exhausted(budget):
-            logger.info("Oracle budget exhausted — stopping stratified sampling.")
-            break
-        this_round = min(round_budget, remaining)
-
-        if rnd == 0:
-            # --- Seed round: uniform allocation, random within stratum ---
-            per_stratum = max(1, this_round // n_strata)
-            for k in range(n_strata):
-                if sample_size - len(all_indices) <= 0 or _budget_exhausted(budget):
-                    break
-                n_sampled, n_pos = _sample_from_stratum_active(k, per_stratum, None)
-                sim_lo, sim_hi = thresholds[k], thresholds[k + 1]
-                logger.info(
-                    f"[Stratified] Seed stratum {k}/{n_strata} "
-                    f"sim=[{sim_lo:.3f},{sim_hi:.3f}]: "
-                    f"sampled {n_sampled}, pos={n_pos}"
-                )
-
-            current_lr, baseline_f1 = _fit_proxy()
-            _compute_stratum_variance()
-            logger.info(
-                f"[Stratified] Seed round done: {len(all_indices)} labeled, "
-                f"proxy F1={baseline_f1:.4f}, "
-                f"variances={[f'{v:.3f}' for v in stratum_variance]}"
-            )
-        else:
-            # --- Adaptive round: Neyman variance-based allocation ---
-            # budget_k ∝ |S_k| × σ_k  (Neyman optimal allocation)
-            stratum_sizes = np.array([len(stratum_rows[k]) for k in range(n_strata)], dtype=float)
-            sigma_k = np.sqrt(stratum_variance + 1e-8)
-            neyman_weights = stratum_sizes * sigma_k
-            neyman_sum = neyman_weights.sum()
-            if neyman_sum > 0:
-                weights = neyman_weights / neyman_sum
-            else:
-                weights = np.ones(n_strata) / n_strata
-            stratum_budgets = np.round(this_round * weights).astype(int)
-            diff = this_round - stratum_budgets.sum()
-            stratum_budgets[np.argmax(neyman_weights)] += diff
-
-            f1_before = _fit_proxy()[1]
-
-            for k in range(n_strata):
-                if sample_size - len(all_indices) <= 0 or _budget_exhausted(budget):
-                    break
-                n_sampled, n_pos = _sample_from_stratum_active(
-                    k, int(stratum_budgets[k]), current_lr,
-                )
-                if n_sampled == 0:
-                    continue
-
-                current_lr, f1_after_k = _fit_proxy()
-                _compute_stratum_variance()
-
-                sim_lo, sim_hi = thresholds[k], thresholds[k + 1]
-                logger.info(
-                    f"[Stratified] Round {rnd} stratum {k}/{n_strata} "
-                    f"sim=[{sim_lo:.3f},{sim_hi:.3f}]: "
-                    f"sampled {n_sampled}, pos={n_pos}, "
-                    f"variance={stratum_variance[k]:.4f}, "
-                    f"F1_delta={f1_after_k - f1_before:+.4f}"
-                )
-                f1_before = f1_after_k
-
-            logger.info(
-                f"[Stratified] Round {rnd} done: {len(all_indices)} labeled, "
-                f"proxy F1={f1_before:.4f}, "
-                f"variances={[f'{v:.3f}' for v in stratum_variance]}"
-            )
-
-    # --- Compute importance weights ---
-    # Low-similarity positives are rare and informative → higher weight.
-    # Weight = inverse of stratum's positive rate (capped).
-    # High-sim stratum with 50% positives → weight 2.
-    # Low-sim stratum with 1% positives  → weight 100 (capped to 10).
-    final_indices = np.array(all_indices)
-    final_labels = np.array(all_labels, dtype=np.int32)
-    sample_weights = np.ones(len(final_labels), dtype=np.float32)
-
-    # Compute per-stratum positive rate
-    for k in range(n_strata):
-        stratum_mask = np.array([row_strata[idx] == k for idx in final_indices])
-        stratum_labels = final_labels[stratum_mask]
-        if len(stratum_labels) == 0:
-            continue
-        p_k = max(stratum_labels.mean(), 0.01)  # floor to avoid div-by-zero
-
-        # For positives in this stratum: weight = 1 / p_k (capped at 10)
-        # Intuition: positive in a 1%-positive stratum is 100× rarer than
-        # positive in a 50%-positive stratum → deserves more influence.
-        pos_weight = min(1.0 / p_k, 10.0)
-        for j in range(len(final_indices)):
-            if stratum_mask[j] and final_labels[j] == 1:
-                sample_weights[j] = pos_weight
-
-    final_pos = int((final_labels == 1).sum())
-    _, final_f1 = _fit_proxy()
-    weighted_pos = float(sample_weights[final_labels == 1].sum()) if final_pos > 0 else 0
-    logger.info(
-        f"[Stratified] Complete: {len(final_indices)} labeled, "
-        f"{final_pos} positives (effective weighted={weighted_pos:.1f}), "
-        f"proxy F1={final_f1:.4f}"
-    )
-
-    return final_indices, final_labels, sample_weights
-
-
-def sample_active(
-    embeddings: np.ndarray,
-    texts: List[Union[str, list]],
-    model: str,
-    url: str,
-    system_prompt: str,
-    sample_size: int,
-    max_tokens: int = 16,
-    temperature: float = 0.0,
-    max_concurrent_requests: int = 256,
-    initial_size: int = 50,
-    batch_size: int = 50,
-) -> Tuple[np.ndarray, np.ndarray]:
-    # NOTE: LEGACY, NON-PAPER PATH. This is a uniform-pilot + uncertainty
-    # sampler and does NOT implement the paper's budget-aware sampling
-    # (Alg. 1/2). The paper's sampler lives in
-    # cluster_proxy.py::sample_activeSampling (reached via
-    # proxy_filter/proxy_join -> cluster_proxy_pipeline with
-    # sampling_method="activeSampling"). Kept only for legacy callers.
-    total = len(texts)
-    initial_size = min(initial_size, sample_size, total)
-
-    all_indices = np.random.choice(total, initial_size, replace=False)
-    pilot_texts = [texts[i] for i in all_indices]
-    all_labels = label_rows_with_llm(
-        pilot_texts, model, url, system_prompt, max_tokens, temperature, max_concurrent_requests
-    )
-
-    remaining_budget = sample_size - initial_size
-    labeled_set = set(all_indices.tolist())
-
-    while remaining_budget > 0:
-        if len(np.unique(all_labels)) < 2:
-            next_batch_size = min(batch_size, remaining_budget)
-            unlabeled = np.array([i for i in range(total) if i not in labeled_set])
-            if len(unlabeled) == 0:
-                break
-            new_idx = np.random.choice(
-                unlabeled, min(next_batch_size, len(unlabeled)), replace=False
-            )
-        else:
-            lr = LogisticRegression(class_weight="balanced", max_iter=1000, solver="lbfgs")
-            lr.fit(embeddings[all_indices], all_labels)
-
-            unlabeled = np.array([i for i in range(total) if i not in labeled_set])
-            if len(unlabeled) == 0:
-                break
-
-            probas = lr.predict_proba(embeddings[unlabeled])[:, 1]
-            uncertainty = np.abs(probas - 0.5)
-            next_batch_size = min(batch_size, remaining_budget, len(unlabeled))
-            most_uncertain = np.argsort(uncertainty)[:next_batch_size]
-            new_idx = unlabeled[most_uncertain]
-
-        new_texts = [texts[i] for i in new_idx]
-        new_labels = label_rows_with_llm(
-            new_texts, model, url, system_prompt, max_tokens, temperature, max_concurrent_requests
-        )
-
-        all_indices = np.concatenate([all_indices, new_idx])
-        all_labels = np.concatenate([all_labels, new_labels])
-        labeled_set.update(new_idx.tolist())
-        remaining_budget -= len(new_idx)
-
-    return all_indices, all_labels
 
 
 def _handle_imbalance(
@@ -3207,358 +2894,6 @@ def _log_prediction_summary(
     )
 
 
-def _compute_eer_scores(
-    pos_probas: np.ndarray,
-    num_definite: int,
-    num_unknown: int,
-) -> np.ndarray:
-    """Compute Expected Error Reduction (EER) scores for unlabeled rows.
-
-    EER(i) = e_current - E[e | eval i]
-    where E[e | eval i] = p_i * e_pass + (1-p_i) * e_fail
-
-    Based on Roy & McCallum (ICML 2001) adapted for semantic query AQP.
-    """
-    I = num_definite
-    M = num_definite + num_unknown
-    if I == 0 and M == 0:
-        return np.zeros(len(pos_probas))
-
-    e_current = (M / max(I, 1)) - 1 if I > 0 else float("inf")
-
-    eer_scores = np.zeros(len(pos_probas))
-    for idx in range(len(pos_probas)):
-        p = pos_probas[idx]
-
-        # Error if this row passes (I increases by 1)
-        e_pass = (M - I - 1) / (I + 1) if (I + 1) > 0 else float("inf")
-        # Error if this row fails (M decreases by 1)
-        if I > 0:
-            e_fail = (M - 1 - I) / I
-        elif M - 1 > 0:
-            e_fail = float("inf")
-        else:
-            e_fail = 0.0
-
-        expected_error = p * e_pass + (1 - p) * e_fail
-
-        if np.isfinite(e_current) and np.isfinite(expected_error):
-            eer_scores[idx] = e_current - expected_error
-        elif np.isinf(e_current) and np.isfinite(expected_error):
-            eer_scores[idx] = 1e6  # Maximum priority
-        else:
-            eer_scores[idx] = 0.0
-
-    return eer_scores
-
-
-def _select_verify_batch(
-    pos_probas: np.ndarray,
-    unlabeled_indices: np.ndarray,
-    refine_batch_size: int,
-    confidence_threshold: float,
-    verify_positive: bool,
-    num_definite: int = 0,
-    num_unknown: int = 0,
-    use_eer: bool = True,
-) -> np.ndarray:
-    """Select which unlabeled rows to verify with LLM.
-
-    Strategies (in priority order):
-    1. EER (use_eer=True): Expected Error Reduction — selects rows that
-       maximally reduce the retrieval error bound M/I - 1.
-    2. verify_positive=True: 50% high-confidence positives + 50% boundary-uncertain.
-    3. verify_positive=False: Pure uncertainty sampling (|p - 0.5|).
-    """
-    if use_eer and num_unknown > 0:
-        eer_scores = _compute_eer_scores(pos_probas, num_definite, num_unknown)
-        verify_local = np.argsort(eer_scores)[-refine_batch_size:]
-        return unlabeled_indices[verify_local]
-
-    if verify_positive:
-        # Send all confident positives to LLM for verification/training
-        candidate_order = np.argsort(-pos_probas)
-        uncertain_order = np.argsort(np.abs(pos_probas - confidence_threshold))
-        n_confident = max(1, int(refine_batch_size))
-        n_uncertain = refine_batch_size - n_confident
-        verify_local = np.unique(np.concatenate([
-            candidate_order[:n_confident],
-            uncertain_order[:n_uncertain],
-        ]))[:refine_batch_size]
-    else:
-        uncertainty = np.abs(pos_probas - 0.5)
-        verify_local = np.argsort(uncertainty)[:refine_batch_size]
-    return unlabeled_indices[verify_local]
-
-
-def _online_refine(
-    lr_model,
-    embeddings: np.ndarray,
-    texts: List[Union[str, list]],
-    sample_indices: np.ndarray,
-    sample_labels: np.ndarray,
-    model: str,
-    url: str,
-    system_prompt: str,
-    confidence_threshold: float,
-    imbalance_strategy: str,
-    max_tokens: int = 16,
-    temperature: float = 0.0,
-    max_concurrent_requests: int = 256,
-    refine_batch_size: int = 50,
-    max_refine_rounds: int = 100,
-    verify_positive: bool = True,
-    verbose: bool = False,
-    prof: Optional[dict] = None,
-    budget: Optional[dict] = None,
-    deferral_enabled: bool = False,
-    deferral_hidden_dims: Sequence[int] = (32, 16),
-    deferral_dagger_beta: float = 0.00,
-):
-    """Online active learning: refine proxy during inference.
-
-    NOTE: LEGACY, NON-PAPER PATH. This EER-driven online refinement with a
-    DAgger MLP deferral head is NOT the paper's method. The paper's graph
-    label propagation (Alg. 3) and proxy-expert router (Alg. 4) are
-    implemented in cluster_proxy.py (predict_with_score_refinement and the
-    fit_deferral_classifier call site), reached via proxy_filter/proxy_join
-    -> cluster_proxy_pipeline. This function is kept only for legacy callers.
-
-    After initial proxy is built from sample_size rows, process remaining
-    rows in batches. For proxy-positive predictions, verify with LLM.
-    Use verified (label, embedding) pairs to update the proxy.
-
-    This addresses extreme class imbalance (e.g. 5 positives in 2600 rows)
-    by actively seeking and verifying positive predictions, enriching the
-    training set with real positives found during inference.
-
-    Batch selection uses Expected Error Reduction (EER) scoring
-    (Roy & McCallum, ICML 2001) to select rows that maximally reduce
-    the retrieval error bound M/I - 1.
-
-    Convergence: stops when (1) mean positive confidence >= threshold,
-    (2) F1 plateaus for 3 consecutive rounds, or (3) no new positives
-    found with sufficient positives already discovered.
-
-    Returns: (refined_model, all_labeled_indices, all_labels)
-    """
-    total = len(texts)
-    labeled_set = set(sample_indices.tolist())
-    all_indices = list(sample_indices)
-    all_labels = list(sample_labels)
-    current_model = lr_model
-    deferral_clf = None
-    if deferral_enabled:
-        from learned_deferral import DeferralClassifier
-
-        deferral_clf = DeferralClassifier(
-            hidden_dims=tuple(int(x) for x in deferral_hidden_dims),
-            random_state=42,
-        )
-        if prof is not None:
-            prof["deferral_online_updates"] = 0
-            prof["deferral_online_random_probe"] = 0
-
-    # Track how many new positives we find
-    initial_pos = int((sample_labels == 1).sum())
-    new_verified = 0
-
-    # F1-plateau convergence tracking
-    f1_history: List[float] = []
-    _F1_PLATEAU_WINDOW = 3
-    _F1_PLATEAU_THRESHOLD = 0.01
-
-    for round_num in range(max_refine_rounds):
-        if _budget_exhausted(budget):
-            logger.info("Oracle budget exhausted — stopping online refinement.")
-            break
-
-        # Predict on all unlabeled rows
-        unlabeled_mask = np.array([i not in labeled_set for i in range(total)])
-        unlabeled_indices = np.where(unlabeled_mask)[0]
-
-        if len(unlabeled_indices) == 0:
-            break
-
-        probas = current_model.predict_proba(embeddings[unlabeled_indices])
-        pos_idx = list(current_model.classes_).index(1) if 1 in current_model.classes_ else 0
-        pos_probas = probas[:, pos_idx]
-
-        # --- Convergence check 1: stop when proxy confidence > threshold ---
-        all_probas = current_model.predict_proba(embeddings)[:, pos_idx]
-        predicted_positive_mask = all_probas >= confidence_threshold
-        if predicted_positive_mask.sum() > 0:
-            mean_pos_confidence = float(all_probas[predicted_positive_mask].mean())
-        else:
-            mean_pos_confidence = 0.0
-
-        # Compute train F1 for logging and plateau detection
-        all_lab_arr_check = np.array(all_labels, dtype=np.int32)
-        all_idx_arr_check = np.array(all_indices)
-        train_preds = current_model.predict(embeddings[all_idx_arr_check])
-        train_f1 = float(f1_score(all_lab_arr_check, train_preds, average="macro", zero_division=0))
-        f1_history.append(train_f1)
-
-        # EER error bound for logging
-        num_definite = int(np.sum(np.array(all_labels) == 1))
-        num_unknown = len(unlabeled_indices)
-        eer_error = (num_definite + num_unknown) / max(num_definite, 1) - 1 if num_definite > 0 else float("inf")
-
-        logger.info(
-            f"Online round {round_num + 1}: "
-            f"mean_pos_confidence={mean_pos_confidence:.4f}, "
-            f"train_f1={train_f1:.4f}, "
-            f"eer_error={eer_error:.4f}, "
-            f"threshold={confidence_threshold:.4f}"
-        )
-
-        if mean_pos_confidence >= confidence_threshold:
-            logger.info(
-                f"Convergence reached: mean positive confidence ({mean_pos_confidence:.4f}) "
-                f">= threshold ({confidence_threshold:.4f}). Stopping refinement."
-            )
-            break
-
-        # --- Convergence check 2: F1 plateau ---
-        if len(f1_history) >= _F1_PLATEAU_WINDOW:
-            recent_f1 = f1_history[-_F1_PLATEAU_WINDOW:]
-            f1_range = max(recent_f1) - min(recent_f1)
-            if f1_range < _F1_PLATEAU_THRESHOLD and train_f1 > 0.5:
-                logger.info(
-                    f"F1 plateau detected: last {_F1_PLATEAU_WINDOW} rounds "
-                    f"F1 range={f1_range:.4f} < {_F1_PLATEAU_THRESHOLD}. "
-                    f"Stopping refinement."
-                )
-                break
-
-        # Select rows to verify. When learned deferral is enabled, reserve a
-        # decaying beta fraction for uniform DAgger probes and use f(x) to
-        # rank the remaining budget once the deferral classifier is fitted.
-        random_probe_global = np.zeros(0, dtype=np.int64)
-        non_probe_budget = int(refine_batch_size)
-        if deferral_enabled and float(deferral_dagger_beta) > 0.0:
-            beta_t = max(0.05, float(deferral_dagger_beta) * (0.95 ** round_num))
-            probe_n = min(
-                len(unlabeled_indices),
-                max(0, int(round(non_probe_budget * beta_t))),
-            )
-            if probe_n > 0:
-                rng = np.random.default_rng(42 + round_num)
-                random_probe_global = rng.choice(
-                    unlabeled_indices, size=probe_n, replace=False
-                ).astype(np.int64)
-                non_probe_budget = max(0, non_probe_budget - probe_n)
-                if prof is not None:
-                    prof["deferral_online_random_probe"] += int(probe_n)
-
-        pool_indices = np.setdiff1d(
-            unlabeled_indices, random_probe_global, assume_unique=False
-        )
-        pool_pos = pos_probas[np.isin(unlabeled_indices, pool_indices)]
-        if (
-            deferral_enabled
-            and deferral_clf is not None
-            and getattr(deferral_clf, "_fitted", False)
-            and non_probe_budget > 0
-            and len(pool_indices) > 0
-        ):
-            from learned_deferral import build_online_deferral_features
-
-            X_pool = build_online_deferral_features(
-                pool_pos, indices=pool_indices, total=total
-            )
-            defer_proba = deferral_clf.predict_defer_proba(X_pool)
-            order = np.argsort(-defer_proba)
-            verify_main = pool_indices[order[: min(non_probe_budget, len(order))]]
-        elif non_probe_budget > 0 and len(pool_indices) > 0:
-            verify_main = _select_verify_batch(
-                pool_pos,
-                pool_indices,
-                non_probe_budget,
-                confidence_threshold,
-                verify_positive,
-                num_definite=num_definite,
-                num_unknown=num_unknown,
-                use_eer=True,
-            )
-        else:
-            verify_main = np.zeros(0, dtype=np.int64)
-        verify_global = np.unique(
-            np.concatenate([verify_main, random_probe_global]).astype(np.int64)
-        )
-        if verify_global.size == 0:
-            logger.info("No rows selected for online verification; stopping refinement.")
-            break
-        proba_by_global = dict(zip(unlabeled_indices.tolist(), pos_probas.tolist()))
-        pre_verify_probas = np.asarray(
-            [proba_by_global[int(i)] for i in verify_global.tolist()], dtype=np.float64
-        )
-        pre_verify_pred = pre_verify_probas >= float(confidence_threshold)
-
-        # Send to LLM for verification
-        verify_texts = [texts[i] for i in verify_global]
-        t0_vllm = time.time()
-        verify_labels = label_rows_with_llm(
-            verify_texts, model, url, system_prompt,
-            max_tokens, temperature, max_concurrent_requests,
-            budget=budget,
-        )
-        if prof is not None:
-            prof["vllm_invocation_time"] += time.time() - t0_vllm
-        if deferral_enabled and deferral_clf is not None:
-            from learned_deferral import build_online_deferral_features
-
-            X_new = build_online_deferral_features(
-                pre_verify_probas, indices=verify_global, total=total
-            )
-            z_new = (
-                pre_verify_pred.astype(np.int32)
-                != np.asarray(verify_labels, dtype=np.int32)
-            ).astype(np.int32)
-            deferral_clf.partial_fit(X_new, z_new)
-            if prof is not None:
-                prof["deferral_online_updates"] += int(len(z_new))
-
-        # Update training set
-        all_indices.extend(verify_global.tolist())
-        all_labels.extend(verify_labels.tolist())
-        labeled_set.update(verify_global.tolist())
-        new_verified += len(verify_labels)
-
-        new_pos_in_batch = int((verify_labels == 1).sum())
-        total_pos = int(np.sum(np.array(all_labels) == 1))
-        logger.info(
-            f"Online round {round_num + 1}: "
-            f"verified {len(verify_labels)} rows, "
-            f"found {new_pos_in_batch} positives "
-            f"(total positives: {total_pos}, total labeled: {len(all_labels)})"
-        )
-
-        # Refit proxy with enriched training set
-        all_idx_arr = np.array(all_indices)
-        all_lab_arr = np.array(all_labels, dtype=np.int32)
-        current_model = fit_proxy_model(
-            embeddings[all_idx_arr], all_lab_arr, imbalance_strategy, verbose,
-            prof=prof,
-        )
-
-        # Early stop if no new positives found and we have enough
-        if new_pos_in_batch == 0 and total_pos >= 3:
-            logger.info("No new positives found in this round and have sufficient positives. Stopping refinement.")
-            break
-
-    final_pos = int(np.sum(np.array(all_labels) == 1))
-    logger.info(
-        f"Online refinement complete: {initial_pos} → {final_pos} positives "
-        f"(+{final_pos - initial_pos} discovered), "
-        f"{new_verified} extra LLM calls for verification"
-    )
-    log_training_metrics(current_model, embeddings[np.array(all_indices)],
-                         np.array(all_labels, dtype=np.int32), verbose, prefix="Refined")
-
-    return current_model, np.array(all_indices), np.array(all_labels, dtype=np.int32)
-
-
 def _make_fixed_ce_oracle(texts, model, url, system_prompt, max_tokens,
                           temperature, concurrency, sample_size, budget_size,
                           calibration_config, router_max_calls, paper_protocol=True):
@@ -3641,36 +2976,14 @@ def proxy_filter(
     refine_num_iter: int = 50,
     refine_t1: Optional[int] = None,
     refine_t2: Optional[int] = None,
-    refine_tol: float = 1e-4,
+    refine_tol: float = 0.0,
     refine_patience: int = 5,
     refine_enabled: bool = True,
-    activeSampling_B1: int = 5,
-    activeSampling_vs_ratio: float = 0.5,
-    activeSampling_n_modes: int = 1,
-    activeSampling_k_intervals: Optional[int] = None,
-    activeSampling_k_auto: bool = False,
-    activeSampling_k_max: int = 4,
-    activeSampling_k_gain_tol: float = 0.02,
-    activeSampling_class_balance: bool = False,
-    activeSampling_n_phases: int = 1,
-    activeSampling_lr_blend_schedule: str = "linear",
-    activeSampling_cold_start_phases: int = 1,
-    activeSampling_lr_explore_frac: float = 0.0,
-    activeSampling_phase_budget_split: str = "equal",
     defer_enabled: bool = False,
     verify_uncertain: bool = True,
     router_max_calls: Optional[int] = None,
     decision_mode: Optional[str] = None,
     learned_calibration_config: Optional[Any] = None,
-    deferral_features: Optional[Sequence[str]] = None,
-    deferral_rank_axis: str = "blended",
-    deferral_hidden_dims_grid: Optional[Sequence[Sequence[int]]] = None,
-    deferral_alpha_grid: Optional[Sequence[float]] = None,
-    deferral_k_folds: int = 5,
-    deferral_inner_cv_k: int = 3,
-    deferral_dagger_beta: float = 0.00,
-    deferral_min_inner_cv_auc: float = 0.60,
-    deferral_min_probe_auc: float = 0.60,
     lr_C: float = 1.0,
     base_threshold: Optional[float] = None,
     lr_class_weight_override: Optional[str] = None,
@@ -3715,9 +3028,12 @@ def proxy_filter(
         full_oracle = _make_fixed_ce_oracle(
             texts, model, url, FILTER_SYSTEM_PROMPT, max_tokens, temperature,
             max_concurrent_requests, total_rows, None, None, 0)
-        labels = full_oracle.label_ids(list(range(total_rows)), stage="fallback")
+        from oracle_budget import binary_labels_or_raise
+        labels = binary_labels_or_raise(full_oracle.label_ids(list(range(total_rows)), stage="fallback"))
         prof["oracle_budget"] = full_oracle.ledger.snapshot()
         mask = np.asarray(labels) == 1
+        from experiments.evaluation_export import remember_population
+        remember_population(lambda: _pandas_to_spark(spark, pdf, schema=df.schema), mask)
         prof["vllm_invocation_time"] = time.time() - t0_llm
         result_spark_df = _pandas_to_spark(spark, pdf[mask].reset_index(drop=True), schema=df.schema)
         prof["total_time"] = time.time() - start_time
@@ -3867,33 +3183,11 @@ def proxy_filter(
                 refine_tol=refine_tol,
                 refine_patience=refine_patience,
                 refine_enabled=refine_enabled,
-                activeSampling_B1=activeSampling_B1,
-                activeSampling_vs_ratio=activeSampling_vs_ratio,
-                activeSampling_n_modes=activeSampling_n_modes,
-                activeSampling_k_intervals=activeSampling_k_intervals,
-                activeSampling_k_auto=activeSampling_k_auto,
-                activeSampling_k_max=activeSampling_k_max,
-                activeSampling_k_gain_tol=activeSampling_k_gain_tol,
-                activeSampling_class_balance=activeSampling_class_balance,
-                activeSampling_n_phases=activeSampling_n_phases,
-                activeSampling_lr_blend_schedule=activeSampling_lr_blend_schedule,
-                activeSampling_cold_start_phases=activeSampling_cold_start_phases,
-                activeSampling_lr_explore_frac=activeSampling_lr_explore_frac,
-                activeSampling_phase_budget_split=activeSampling_phase_budget_split,
                 defer_enabled=defer_enabled,
                 verify_uncertain=verify_uncertain,
                 router_max_calls=router_max_calls,
                 decision_mode=decision_mode,
                 learned_calibration_config=learned_calibration_config,
-                deferral_features=deferral_features,
-                deferral_rank_axis=deferral_rank_axis,
-                deferral_hidden_dims_grid=deferral_hidden_dims_grid,
-                deferral_alpha_grid=deferral_alpha_grid,
-                deferral_k_folds=deferral_k_folds,
-                deferral_inner_cv_k=deferral_inner_cv_k,
-                deferral_dagger_beta=deferral_dagger_beta,
-                deferral_min_inner_cv_auc=deferral_min_inner_cv_auc,
-                deferral_min_probe_auc=deferral_min_probe_auc,
                 lr_C=lr_C,
                 base_threshold=base_threshold,
                 lr_class_weight_override=lr_class_weight_override,
@@ -3918,6 +3212,8 @@ def proxy_filter(
                 budget["used"] = fixed_oracle.ledger.used
 
         t0_result = time.time()
+        from experiments.evaluation_export import remember_population
+        remember_population(lambda: _pandas_to_spark(spark, pdf, schema=df.schema), positive_mask)
         result_pdf = pdf[positive_mask].reset_index(drop=True)
         result_spark_df = _pandas_to_spark(spark, result_pdf, schema=df.schema)
         prof["result_assembly_time"] = time.time() - t0_result
@@ -4001,24 +3297,6 @@ def proxy_filter(
         )
 
         # Online active learning: only when explicitly requested
-        if not _budget_exhausted(budget) and sampling_method == "online":
-            logger.info("Online mode requested — starting online refinement...")
-            lr_model, sample_idx, sample_labels = _online_refine(
-                lr_model, embeddings, texts, sample_idx, sample_labels,
-                model, url, FILTER_SYSTEM_PROMPT, confidence_threshold,
-                imbalance_strategy, max_tokens, temperature,
-                max_concurrent_requests, refine_batch_size,
-                max_refine_rounds, verbose=verbose, prof=prof,
-                budget=budget,
-                deferral_enabled=(decision_mode == "learned_deferral"),
-                deferral_hidden_dims=(
-                    tuple(deferral_hidden_dims_grid[0])
-                    if deferral_hidden_dims_grid
-                    else (32, 16)
-                ),
-                deferral_dagger_beta=deferral_dagger_beta,
-            )
-            actual_sample_size = len(sample_labels)
 
         if proxy_model_path:
             preds = lr_model.predict(embeddings[sample_idx])
@@ -4141,36 +3419,14 @@ def proxy_join(
     refine_num_iter: int = 50,
     refine_t1: Optional[int] = None,
     refine_t2: Optional[int] = None,
-    refine_tol: float = 1e-4,
+    refine_tol: float = 0.0,
     refine_patience: int = 5,
     refine_enabled: bool = True,
-    activeSampling_B1: int = 5,
-    activeSampling_vs_ratio: float = 0.5,
-    activeSampling_n_modes: int = 1,
-    activeSampling_k_intervals: Optional[int] = None,
-    activeSampling_k_auto: bool = False,
-    activeSampling_k_max: int = 4,
-    activeSampling_k_gain_tol: float = 0.02,
-    activeSampling_class_balance: bool = False,
-    activeSampling_n_phases: int = 1,
-    activeSampling_lr_blend_schedule: str = "linear",
-    activeSampling_cold_start_phases: int = 1,
-    activeSampling_lr_explore_frac: float = 0.0,
-    activeSampling_phase_budget_split: str = "equal",
     defer_enabled: bool = False,
     verify_uncertain: bool = True,
     router_max_calls: Optional[int] = None,
     decision_mode: Optional[str] = None,
     learned_calibration_config: Optional[Any] = None,
-    deferral_features: Optional[Sequence[str]] = None,
-    deferral_rank_axis: str = "blended",
-    deferral_hidden_dims_grid: Optional[Sequence[Sequence[int]]] = None,
-    deferral_alpha_grid: Optional[Sequence[float]] = None,
-    deferral_k_folds: int = 5,
-    deferral_inner_cv_k: int = 3,
-    deferral_dagger_beta: float = 0.00,
-    deferral_min_inner_cv_auc: float = 0.60,
-    deferral_min_probe_auc: float = 0.60,
     lr_C: float = 1.0,
     base_threshold: Optional[float] = None,
     lr_class_weight_override: Optional[str] = None,
@@ -4238,10 +3494,14 @@ def proxy_join(
         full_oracle = _make_fixed_ce_oracle(
             pair_msgs, model, url, JOIN_SYSTEM_PROMPT, max_tokens, temperature,
             max_concurrent_requests, len(pairs), None, None, 0)
-        labels = full_oracle.label_ids(list(range(len(pairs))), stage="fallback")
+        from oracle_budget import binary_labels_or_raise
+        labels = binary_labels_or_raise(full_oracle.label_ids(list(range(len(pairs))), stage="fallback"))
         prof["oracle_budget"] = full_oracle.ledger.snapshot()
         prof["vllm_invocation_time"] = time.time() - t0_llm
         matched = [p for p, y in zip(pairs, np.asarray(labels)) if y == 1]
+        from experiments.evaluation_export import remember_population
+        remember_population(lambda: _assemble_join_result(spark, left_pdf, right_pdf,
+                            left_records, right_records, pairs), np.asarray(labels) == 1)
         result_spark_df = _assemble_join_result(spark, left_pdf, right_pdf, left_records, right_records, matched)
         prof["total_time"] = time.time() - start_time
         prof["cluster_profiling"] = {"mode": "no_proxy", "n_labeled": len(pairs), "n_total": len(pairs)}
@@ -4562,7 +3822,7 @@ def proxy_join(
                 [left_contents[int(i)] for i,j in pair_indices],
                 [right_contents[int(j)] for i,j in pair_indices], prompt, baseline_job, prof)
             lr_feats = None
-            ce_scores = np.zeros(n_pairs) if baseline_job["system"] == "LOTUS" else graph_features @ paper_query
+            ce_scores = graph_features @ paper_query
             join_sims = ce_scores
         elif activeSampling_backend == "fixed_ce" and sampling_method in ("activeSampling", "random", "stratified", "top_k"):
             if repr_mode == "biencoder":
@@ -4634,33 +3894,11 @@ def proxy_join(
                 refine_tol=refine_tol,
                 refine_patience=refine_patience,
                 refine_enabled=refine_enabled,
-                activeSampling_B1=activeSampling_B1,
-                activeSampling_vs_ratio=activeSampling_vs_ratio,
-                activeSampling_n_modes=activeSampling_n_modes,
-                activeSampling_k_intervals=activeSampling_k_intervals,
-                activeSampling_k_auto=activeSampling_k_auto,
-                activeSampling_k_max=activeSampling_k_max,
-                activeSampling_k_gain_tol=activeSampling_k_gain_tol,
-                activeSampling_class_balance=activeSampling_class_balance,
-                activeSampling_n_phases=activeSampling_n_phases,
-                activeSampling_lr_blend_schedule=activeSampling_lr_blend_schedule,
-                activeSampling_cold_start_phases=activeSampling_cold_start_phases,
-                activeSampling_lr_explore_frac=activeSampling_lr_explore_frac,
-                activeSampling_phase_budget_split=activeSampling_phase_budget_split,
                 defer_enabled=defer_enabled,
                 verify_uncertain=verify_uncertain,
                 router_max_calls=router_max_calls,
                 decision_mode=decision_mode,
                 learned_calibration_config=learned_calibration_config,
-                deferral_features=deferral_features,
-                deferral_rank_axis=deferral_rank_axis,
-                deferral_hidden_dims_grid=deferral_hidden_dims_grid,
-                deferral_alpha_grid=deferral_alpha_grid,
-                deferral_k_folds=deferral_k_folds,
-                deferral_inner_cv_k=deferral_inner_cv_k,
-                deferral_dagger_beta=deferral_dagger_beta,
-                deferral_min_inner_cv_auc=deferral_min_inner_cv_auc,
-                deferral_min_probe_auc=deferral_min_probe_auc,
                 lr_C=lr_C,
                 base_threshold=base_threshold,
                 lr_class_weight_override=lr_class_weight_override,
@@ -4686,6 +3924,9 @@ def proxy_join(
 
         t0_result = time.time()
         matched_indices = [pair_indices[i] for i in range(effective_pairs) if positive_mask[i]]
+        from experiments.evaluation_export import remember_population
+        remember_population(lambda: _assemble_join_result(spark, left_pdf, right_pdf,
+                            left_records, right_records, pair_indices), positive_mask)
         result_spark_df = _assemble_join_result(spark, left_pdf, right_pdf, left_records, right_records,
                                                 matched_indices)
         prof["result_assembly_time"] = time.time() - t0_result
@@ -4765,17 +4006,6 @@ def proxy_join(
         )
 
         # Online active learning: only when explicitly requested
-        if not _budget_exhausted(budget) and sampling_method == "online":
-            logger.info("Online mode requested — starting online refinement...")
-            lr_model, s_idx, s_labels = _online_refine(
-                lr_model, pair_embeddings, pair_texts, s_idx, s_labels,
-                model, url, JOIN_SYSTEM_PROMPT, confidence_threshold,
-                imbalance_strategy, max_tokens, temperature,
-                max_concurrent_requests, refine_batch_size,
-                max_refine_rounds, verbose=verbose, prof=prof,
-                budget=budget,
-            )
-            actual_sample_size = len(s_labels)
 
         if proxy_model_path:
             preds = lr_model.predict(pair_embeddings[s_idx])
@@ -4886,27 +4116,8 @@ def _do_sampling(
     total = len(texts)
     sample_size = min(sample_size, total)
 
-    if sampling_method in ("active", "online"):
-        # Adaptive stratified active sampling with importance weighting
-        # and Neyman variance-based budget allocation.
-        image_cols = _get_image_columns(prompt)
-        if image_cols and _is_siglip_model(embedding_model):
-            text_dim = _siglip_text_dim(embedding_model)
-            prompt_emb = embed_texts_siglip([prompt], embedding_model)[0]
-            row_emb = embeddings[:, :text_dim]
-        else:
-            prompt_emb = embed_query(prompt, embedding_model)[0]
-            row_emb = embeddings
-        t0 = time.time()
-        indices, labels, sample_weights = sample_stratified(
-            row_emb, prompt_emb, texts, sample_size,
-            model, url, system_prompt,
-            max_tokens, temperature, max_concurrent_requests,
-            budget=budget,
-        )
-        if prof is not None:
-            prof["vllm_invocation_time"] += time.time() - t0
-        return indices, labels, sample_weights
+    if sampling_method in ('active','online'):
+        raise ValueError('Retired sampling method; use activeSampling for paper SAS')
 
     if sampling_method == "topk":
         image_cols = _get_image_columns(prompt)

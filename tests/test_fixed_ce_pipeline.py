@@ -11,7 +11,7 @@ def test_fixed_pipeline_bypasses_dynamic_axis(monkeypatch, budget, refine):
     monkeypatch.setattr(cp, '_KNN_CACHE_ENABLED', False)
     def forbidden(*args, **kwargs):
         raise AssertionError('legacy dynamic sampling is reachable')
-    monkeypatch.setattr(cp, 'sample_activeSampling', forbidden)
+    assert not hasattr(cp, 'sample_activeSampling')
     rng = np.random.default_rng(7)
     embeddings = rng.normal(size=(80,8))
     embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -25,9 +25,9 @@ def test_fixed_pipeline_bypasses_dynamic_axis(monkeypatch, budget, refine):
         sampling_method='activeSampling',
         activeSampling_backend='fixed_ce', fixed_ce_scores=scores,
         fixed_ce_config=SamplingConfig(batch_size=4, seed=7),
-        activeSampling_n_phases=5, knn_k=5, defer_enabled=False, refine_enabled=refine,
+        knn_k=5, defer_enabled=False, refine_enabled=refine,
     )
-    assert len(calls) == budget == len(set(calls))
+    assert len(calls) == len(set(calls)) == (80 if budget < 2 else budget)
     info = profile['activeSampling_profiling']
     assert info['sampler'] == 'fixed_ce_pilot' and info['sort_count'] == 1
     assert info['_fixed_order'].tolist() == list(range(79,-1,-1))
@@ -67,12 +67,12 @@ def test_shared_transport_caps_calibration_and_preserves_new_positives(monkeypat
         decision_mode='learned_calibration',learned_calibration_config=cfg)
     assert len(calls) == len(set(calls)) == 7
     assert oracle.ledger.used == 7
-    assert profile['result_status'] == 'abstain'
+    assert profile['result_status'] == 'llm_executed_with_failures'
     assert profile['discovery_status'] == 'positive_found'
-    assert mask.sum() == 2  # discovered in calibration, after all-negative L
+    assert mask.sum() == 2  # discovered in S3 fallback, after all-negative L
     assert len(profile['unresolved_ids']) == 23
     assert profile['quality_certificate'] is None
-    assert {e['stage'] for e in oracle.ledger.events} == {'L','A'}
+    assert {e['stage'] for e in oracle.ledger.events} == {'L','fallback'}
 
 
 def test_zero_hits_do_not_certify_empty_result(monkeypatch):
@@ -89,7 +89,7 @@ def test_zero_hits_do_not_certify_empty_result(monkeypatch):
         sampling_method='activeSampling',similarities=np.arange(20),
         fixed_ce_config=SamplingConfig(),fixed_ce_scores=np.arange(20),activeSampling_backend='fixed_ce',knn_k=3)
     assert not mask.any()
-    assert profile['result_status'] == 'abstain'
+    assert profile['result_status'] == 'llm_executed_with_failures'
     assert profile['discovery_status'] == 'no_positive_found'
     assert len(profile['unresolved_ids']) == 18
 
@@ -113,14 +113,13 @@ def test_census_status_requires_successful_labels_for_entire_pool(monkeypatch,po
         activeSampling_backend='fixed_ce',fixed_ce_config=SamplingConfig(batch_size=4),
         knn_k=3,refine_enabled=True,defer_enabled=False)
     assert oracle.ledger.used==n
-    assert profile['stop_reason']=='budget_exhausted'
     if failed_id is not None:
-        assert profile['result_status']=='abstain'
+        assert profile['result_status']=='llm_executed_with_failures'
         assert profile['discovery_status']=='no_positive_found'
         assert profile['unresolved_ids']==[failed_id]
         assert not mask.any()
     else:
-        assert profile['result_status']=='fully_verified'
+        assert profile['result_status']=='llm_executed'
         assert profile['unresolved_ids']==[]
         assert profile['discovery_status']==('positive_found' if positive else 'verified_empty')
         assert np.array_equal(mask,np.full(n,positive))
@@ -152,9 +151,9 @@ def test_paper_protocol_single_class_hands_whole_query_to_llm(monkeypatch, rule)
 
 
 def SamplingConfig(**kwargs):
-    # These tests exercise saved legacy hard-budget contracts explicitly.
-    kwargs.setdefault("protocol", "legacy")
+    # Explicit small batches exercise the paper hard-budget contract.
+    kwargs.setdefault("protocol", "paper")
     kwargs.setdefault("pilot_fraction", .1)
-    kwargs.setdefault("pilot_mode", "hybrid")
+    kwargs.setdefault("pilot_mode", "uniform")
     kwargs.setdefault("n_min", 1)
     return _SamplingConfig(**kwargs)

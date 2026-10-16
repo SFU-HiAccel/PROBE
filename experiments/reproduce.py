@@ -20,12 +20,37 @@ MANIFEST = ROOT / "experiments/paper_manifest.json"
 
 def source_identity():
     files = [*ROOT.glob("*.py"), *ROOT.joinpath("experiments").glob("*.py")]
+    analysis = {'report.py', 'paper_plots.py', 'paper_statistics.py'}
+    files = [p for p in files if p.name not in analysis]
     files += [p for name in ("bargain", "lotus", "sembench") for p in ROOT.joinpath("third_party", name).rglob("*.py")]
     files += [MANIFEST, ROOT / "docs/artifact/manuscript_snapshot.json"]
     files += [ROOT/name for name in ("requirements.core.txt", "requirements.client.txt", "requirements.client.lock.txt")]
     hashes = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
               for p in sorted(files)}
     return hashes
+
+
+def input_identity(args):
+    """Hash prepared inputs before resume decisions, outside measured execution."""
+    roots = dict(sembench=(args.data_root / 'SemBench' / 'files').resolve(),
+                 lro=(args.lro_root or args.data_root / 'databases').resolve())
+    entries = {}
+    for label, root in roots.items():
+        for path in sorted(root.rglob('*')):
+            if not path.is_file() or any(p.startswith('.') for p in path.relative_to(root).parts):
+                continue
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(8*1024*1024), b''):
+                    digest.update(chunk)
+            entries[label+'/'+str(path.relative_to(root))] = digest.hexdigest()
+    if not entries:
+        raise ValueError('No prepared input files found')
+    payload = json.dumps(entries, sort_keys=True).encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    args.output.mkdir(parents=True, exist_ok=True)
+    (args.output / f'inputs-{digest}.json').write_bytes(payload+b'\n')
+    return dict(sha256=digest, file_count=len(entries), roots={k:str(v) for k,v in roots.items()})
 
 
 def _points_for_system(experiment, system):
@@ -91,6 +116,7 @@ def plan(args):
                 representation = models.get("representations", {}).get(point.get("representation"), {})
                 workload = manifest["workloads"][query]
                 jobs.append(dict(experiment=name, query=query, system=system, seed=seed,
+                    operator=workload['operator'], modality=workload['modality'],
                     paper_N=workload["N"], data_environment=workload["environment"],
                     model=expert.get("model", args.model),
                     oracle_url=expert.get("oracle_url", args.oracle_url),
@@ -113,6 +139,7 @@ def plan(args):
 def environment(job, args, output):
     # Resolve all paper knobs explicitly; unrelated historical LASO overrides cannot leak in.
     env = {k: v for k, v in os.environ.items() if not k.startswith(("LASO_", "ACTIVESAMPLING_", "PROBE_", "LLMSQL_", "SEMBENCH_"))}
+    env.pop('ECOMM_Q7_TOPK', None)
     env.update(job["data_environment"])
     env["LROBENCH_DATABASES_DIR"] = str((args.lro_root or args.data_root / "databases").resolve())
     point = job["point"]
@@ -141,7 +168,7 @@ def environment(job, args, output):
                PROBE_ORACLE_LOG=str(output / "oracle.jsonl"), PROBE_LABEL_CACHE="",
                PROBE_BLOCKING_K="0", PROBE_KNN_PROTOCOL="paper", PROBE_BARGAIN_MODE="",
                PROBE_CALIBRATION_PROTOCOL="paper", PROBE_ONLY_NO_OPT="0", SEMBENCH_UNPARSED_AS_FALSE="0",
-               LASO_LC_SAMPLE_FRAC=".8", LASO_LC_CALIB_FRAC=".2", LASO_LC_ROUTE_FRAC="0",
+               LASO_LC_SAMPLE_FRAC=".6", LASO_LC_CALIB_FRAC=".4", LASO_LC_ROUTE_FRAC="0",
                LASO_LC_BUDGET_SCOPE="preparation", LASO_LC_ROUTE_UNLIMITED="1",
                LASO_LC_CALIB_INPUT="refined", LASO_LC_ALPHA=str(point.get("alpha", .5)),
                LASO_LC_CALIBRATOR=point.get("calibrator", "platt"),
@@ -181,7 +208,9 @@ def run_job(job, args):
         source = args.scaledoc_source
         external_sources = {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest()
                             for p in sorted(source.joinpath("src").rglob("*.py"))}
-    identity = dict(job=job, sources=hashes, external_sources=external_sources,
+    stable_job = {k:v for k,v in job.items() if k!='endpoint_observations'}
+    identity = dict(job=stable_job, sources=hashes, external_sources=external_sources,
+                    inputs=args.input_identity,
                     client_environment=client_environment, device=args.device, data_root=str(args.data_root.resolve()),
                     lro_root=str((args.lro_root or args.data_root / "databases").resolve()))
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
@@ -234,7 +263,8 @@ def run_job(job, args):
             raise RuntimeError("Missing raw predictions")
         outputs = {str(p.relative_to(folder)): hashlib.sha256(p.read_bytes()).hexdigest()
                    for p in attempt.rglob("*") if p.is_file()}
-        record = dict(**identity, outputs=outputs, started_unix=started, ended_unix=time.time(),
+        record = dict(**identity, endpoint_observations=job.get('endpoint_observations',{}),
+                      outputs=outputs, started_unix=started, ended_unix=time.time(),
                       row=row, run=key, evidence_status="measured_single_run",
                       expert_revision_status="declared; must match separately archived server metadata")
         tmp = completed.with_suffix(".tmp")
@@ -263,7 +293,7 @@ def endpoint_metadata(jobs):
     observations = {}
     for job in jobs:
         bindings = [(job['oracle_url'], job['model'])]
-        if job['system'] == 'LOTUS':
+        if job['system'] == 'LOTUS' and job['operator'] == 'filter':
             bindings.append((job['proxy']['oracle_url'], job['proxy']['model']))
         for url, model in bindings:
             if url not in observations:
@@ -318,7 +348,7 @@ def main():
             prerequisites.append(f"{job['point'].get('expert', job['model'])}: expert endpoint and immutable revision")
         if job["point"].get("representation") in ("jina-reranker-m0", "SigLIP", "CLIP-base") and not immutable_revision(job["representation"].get("revision")):
             prerequisites.append(f"{job['point']['representation']}: immutable representation revision")
-        if job["system"] == "LOTUS" and (not all(job["proxy"].get(k) for k in ("model", "oracle_url")) or not immutable_revision(job["proxy"].get("revision"))):
+        if job["system"] == "LOTUS" and job['operator'] == 'filter' and (not all(job["proxy"].get(k) for k in ("model", "oracle_url")) or not immutable_revision(job["proxy"].get("revision"))):
             prerequisites.append("LOTUS: Qwen3-VL-2B proxy endpoint and immutable revision")
         if not immutable_revision(job["ce_revision"]):
             prerequisites.append("Cross-encoder: immutable 40-character commit revision")
@@ -342,16 +372,16 @@ def main():
         parser.error(f"Model endpoint preflight failed: {error}")
     for job in jobs:
         job['endpoint_observations'] = {url:observations[url] for url in (
-            [job['oracle_url']] + ([job['proxy']['oracle_url']] if job['system']=='LOTUS' else []))}
+            [job['oracle_url']] + ([job['proxy']['oracle_url']] if job['system']=='LOTUS' and job['operator']=='filter' else []))}
     # Resolve model assets once before timing, never hide download time in a run.
     needed = set()
     for job in jobs:
         if job["system"] in ("PROBE", "BARGAIN-A", "BARGAIN-P", "BARGAIN-R") and job["point"].get("representation") not in ("SigLIP", "CLIP-base"):
             needed.add(("jinaai/jina-reranker-m0", job["representation"]["revision"]) if job["point"].get("representation") == "jina-reranker-m0" else ("Qwen/Qwen3-VL-Reranker-2B", job["ce_revision"]))
-        if job["system"] in ("CSV", "ScaleDoc", "AIQA"):
+        if job["system"] in ("CSV", "ScaleDoc", "AIQA") or (job['system']=='LOTUS' and job['operator']=='join'):
             sys.path.insert(0, str(ROOT))
             from experiments.paper_baselines import BASELINE_MODELS
-            kind = "multimodal" if job["query"].startswith(("mmqa_", "animals_")) or job["query"] in ("cars_q3", "cars_q8", "ecomm_q9", "ecomm_q13", "ecomm_q6") else "text"
+            kind = 'multimodal' if 'image' in job['modality'] else 'text'
             rep = dict(BASELINE_MODELS[kind], **job["baseline_representation"].get(kind, {}))
             needed.add((rep["model"], rep["revision"]))
     if needed:
@@ -365,6 +395,8 @@ def main():
             from huggingface_hub import snapshot_download
             rep = job["representation"]
             rep["snapshot"] = snapshot_download(rep["model"], revision=rep["revision"])
+    print('Hashing prepared dataset files before resume checks', flush=True)
+    args.input_identity = input_identity(args)
     for index, job in enumerate(jobs, 1):
         print(json.dumps(dict(status="starting", index=index, total=len(jobs),
                               experiment=job["experiment"], query=job["query"],

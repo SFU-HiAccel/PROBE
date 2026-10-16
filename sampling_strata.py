@@ -15,7 +15,7 @@ def geometric_strata(order: np.ndarray, max_strata: int) -> List[np.ndarray]:
         return []
     s = int(max(1, min(int(max_strata), int(np.floor(np.log2(n))) + 1)))
     w0 = n / (2.0 ** s - 1.0)
-    bounds = [int(round(w0 * (2.0 ** k - 1.0))) for k in range(s + 1)]
+    bounds = [int(np.ceil(w0 * (2.0 ** k - 1.0))) for k in range(s + 1)]
     bounds[-1] = n
     strata = [order[a:b] for a, b in zip(bounds, bounds[1:]) if b > a]
     return strata

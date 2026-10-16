@@ -46,10 +46,6 @@ from learned_calibration import (
 MODEL = os.environ.get("SEMBENCH_MODEL", "google/gemma-4-26B-A4B-it")   # default oracle since 2026-09-24 (was Qwen/Qwen3-VL-30B-A3B-Instruct)
 #MODEL = os.environ.get("SEMBENCH_MODEL", "Qwen/Qwen3.6-35B-A3B")
 
-JAR_PATH = os.environ.get(
-    "LASO_SPARK_JAR",
-    "./spark-semantic-plugin_2.12-0.1.0-SNAPSHOT.jar",
-)
 EMBEDDING_MODEL = f"{DATA_ROOT}/siglip-base-patch16-224"
 
 # vLLM exposes Prometheus counters at /metrics on the same port as the OpenAI
@@ -78,36 +74,9 @@ EMBEDDING_MODELS_TEXT = [
 ]
 
 # Modality per query: "multimodal" = has image columns, "text" = text-only
-QUERY_MODALITY: dict = {
-    "ecomm_q6":   "multimodal",  # image × category classification
-    "ecomm_q7":   "text",        # product text-text join
-    "ecomm_q8":   "multimodal",  # text description ↔ product image
-    "ecomm_q9":   "multimodal",  # image-image same category+color
-    "ecomm_q13":  "multimodal",  # running shirt image filter
-    "movie_q5":   "text",        # review text-text join (same sentiment)
-    "movie_q7":   "text",        # review text-text join (opposite sentiment)
-    "mmqa_q2a":   "multimodal",  # racetrack text + logo image
-    "mmqa_q7":    "multimodal",  # airline text + logo image
-    "cars_q3":    "multimodal",  # manual cars + image filter ("not damaged")
-    "cars_q4":    "text",        # complaint text filter (engine problems)
-    "cars_q8":    "multimodal",  # vehicle image filter
-    "cars_q10":   "text",        # car complaint text classification
-    "animals_q1": "multimodal",  # zebra image filter → count
-    "animals_q3": "multimodal",  # zebra image filter → top city (groupBy City)
-    "animals_q10":"multimodal",  # zebra image filter → top (city, stationID)
-    # LRobench match queries (text-text semantic joins over tabular data)
-    "match102":   "text",        # customer city  ↔ office territory
-    "match104":   "text",        # comment text   ↔ tag name
-    "match105":   "text",        # state code     ↔ full state name (wholesalers)
-    "match106":   "text",        # state code     ↔ full state name (high-revenue)
-    "match107":   "text",        # team name      ↔ country name
-    "match113":   "text",        # senior officials — shared first name
-    "match121":   "text",        # supplier name   ↔ supplier name (case/format drift)
-    "match122":   "text",        # staff self-join — same first name, different person
-    "match125":   "text",        # merchant category ↔ RM-MR category
-    "match202":   "text",        # imdb row        ↔ rotten_tomatoes row (high ratings)
-    "match203":   "text",        # imdb row        ↔ rotten_tomatoes row (low ratings)
-    "match305":   "text",        # frpm col        ↔ schools col (schema match)
+QUERY_MODALITY = {
+    name: 'multimodal' if 'image' in workload['modality'] else 'text'
+    for name, workload in json.loads((Path(__file__).parent/'experiments/paper_manifest.json').read_text())['workloads'].items()
 }
 
 
@@ -179,12 +148,9 @@ KNN_K_VALUES = ["auto"]
 RANDOM_SEED = int(os.environ.get("LASO_RANDOM_SEED", "0"))
 # Patch R1: fraction of the total LLM budget the router may spend (env: LASO_ROUTER_CAP_FRAC).
 ROUTER_CAP_FRAC = float(os.environ.get("LASO_ROUTER_CAP_FRAC", "0.3"))
-# Fixed-CE production shares one hard oracle budget across learning L, calibration A,
-# and routing D. Default allocation is 50/40/10; retries also consume this budget.
-# Historical uncapped experiments require explicit legacy configuration and are not
-# measurements of this default algorithm.
-LC_SAMPLE_FRAC = float(os.environ.get("LASO_LC_SAMPLE_FRAC", "0.8"))
-LC_CALIB_FRAC = float(os.environ.get("LASO_LC_CALIB_FRAC", "0.2"))
+# Preparation covers training and calibration. Routing and S3 can query the remaining population.
+LC_SAMPLE_FRAC = float(os.environ.get("LASO_LC_SAMPLE_FRAC", "0.6"))
+LC_CALIB_FRAC = float(os.environ.get("LASO_LC_CALIB_FRAC", "0.4"))
 LC_ROUTE_FRAC = float(os.environ.get("LASO_LC_ROUTE_FRAC", "0.0"))
 # Scales the total learned-calibration budget relative to the nominal budget_pct. 1.0 carves the
 # calibration sample and the router out of the budget; 1.5 with fracs 2/3, 4/15, 1/15 instead keeps
@@ -231,30 +197,15 @@ LC_ROUTE_OBJECTIVE = os.environ.get("LASO_LC_ROUTE_OBJECTIVE", "pool")
 LC_ROUTE_COST_EXP = float(os.environ.get("LASO_LC_ROUTE_COST_EXP", "1.0"))
 
 # Active-learning sampler config (paper §3).
-ACTIVESAMPLING_VS_RATIO = 0.5            # legacy only; fixed CE rejects LASO_VS_RATIO
-ACTIVESAMPLING_N_PHASES = 5             # legacy only; no reranking in fixed CE
-ACTIVESAMPLING_LR_BLEND_SCHEDULE = "linear"  # lambda_t = (t-1)/(T-1), legacy linear 0->1 ramp across rounds
-ACTIVESAMPLING_COLD_START_PHASES = 1    # leading SigLIP-only (lambda=0) phases
-
-enable_defer = True
-DEFERRAL_FEATURES = [
-    "z_smooth",
-    "neighbour_disag",
-    "rank_position",
-]
-
-
 def _cascade_decision_enabled(decision_mode: Optional[str] = None) -> bool:
     """Whether the active-learning + Bias Diffusion + Homogeneity Propagation path runs a post-Bias Diffusion + Homogeneity Propagation decision layer."""
-    mode = str(decision_mode if decision_mode is not None else "learned_deferral")
+    mode = str(decision_mode if decision_mode is not None else LEARNED_CALIBRATION_MODE)
     if mode == "none":
         return False
-    return bool(enable_defer or mode in ("learned_deferral", LEARNED_CALIBRATION_MODE))
+    return mode == LEARNED_CALIBRATION_MODE
 
 
 LLM_BATCH_SIZE = 128
-
-
 
 
 # Ablation grid: (label, sampling_strategy, refine_enabled)
@@ -264,27 +215,7 @@ LLM_BATCH_SIZE = 128
 #                    "top_k"      = deterministic top-K along fixed cosine
 #                                   similarity axis (Proxy-100x §5.4 baseline)
 # refine_enabled: True = Bias Diffusion + Homogeneity Propagation postprocess, False = LR-only prediction
-ABLATION_CONFIGS = [
-("activeSampling+refine+learned_calibration", "activeSampling", True),
-# ("activeSampling+refine+dasp_topk",        "activeSampling",     True),
-# # UQE Algorithm 2 online active-learning sampler.
-# # Spec: docs/uqe_active_implementation.md
-# ("uqe_active+refine+trust_proxy",  "uqe_active", True),
-# ("uqe_active+lr_only",         "uqe_active", False),
-# Top-K similarity baseline. Deterministic: picks the K rows with the
-# highest cosine similarity to the prompt. Useful as the cheapest
-# non-trivial baseline and as the "no surrogate, no randomness" reference
-# point in the sampler ablation.
-# ("top_k+refine+trust_proxy",       "top_k",      True),
-#("uqe_active+lr_only",              "top_k",      False),
-
-   #("activeSampling+refine+learned_deferral", "activeSampling",  True),
-   #("activeSampling+refine+dasp_topk",        "activeSampling",  True),
-#    ("random+refine",      "random",  True),
-#("activeSampling+lr_only", "activeSampling",  False),
-#    ("random+lr_only", "random",  False),
-]
-
+ABLATION_CONFIGS = [('activeSampling+refine+learned_calibration','activeSampling',True)]
 
 
 def _decision_mode_for_ablation(ablation_label: str) -> str:
@@ -297,11 +228,11 @@ def _decision_mode_for_ablation(ablation_label: str) -> str:
     # +dasp_topk is unified into the learned-deferral router (the DASP/top-k
     # decision path was removed); both map to the same policy.
     if label.endswith("+learned_deferral") or label.endswith("+dasp_topk"):
-        return "learned_deferral"
+        raise ValueError("Retired router; use learned_calibration")
     if label.endswith("+lr_only"):
         # LR-only ablation bypasses Bias Diffusion + Homogeneity Propagation entirely; no post-Bias Diffusion + Homogeneity Propagation decision layer.
         return "none"
-    return "learned_deferral"
+    return "learned_calibration"
 
 
 def _deferral_policy_for_ablation(ablation_label: str) -> str:
@@ -309,19 +240,8 @@ def _deferral_policy_for_ablation(ablation_label: str) -> str:
     if mode == "none":
         return "trust_proxy"
     if mode == "learned_deferral":
-        return "learned_deferral"
+        raise ValueError("Retired router; use learned_calibration")
     return mode
-
-
-def _lc_phases(sample_budget: int) -> int:
-    """Active-learning rounds that fit in L's share.
-
-    Each round costs at least ~3 calls, so the configured 5 rounds need 15 calls. When L's share is
-    smaller than that the sampler used to overshoot and swallow the whole budget, leaving the
-    calibration sample A empty (70 of the 242 refusals in the 5-seed study). Cutting rounds keeps L
-    inside its share so A always gets its own.
-    """
-    return max(1, min(ACTIVESAMPLING_N_PHASES, int(sample_budget) // 3))
 
 
 def _learned_calibration_config(n_items: int, budget_pct: float) -> LearnedCalibrationConfig:
@@ -356,12 +276,6 @@ spark = None
 all_results = []
 results_dir = "./results/activeSampling_grid/"
 INCLUDE_NO_OPT = os.environ.get("LASO_INCLUDE_NO_OPT", "0").lower() in {"1", "true", "yes", "on"}
-# How the no-proxy baseline calls the LLM: "jni" = the Spark/Rust operator (sem_filter/sem_join with
-# proxy_sample=False), "python" = proxy_model's labelling path on every candidate (no_proxy=True), which
-# uses the same messages, chat template and answer parsing as PROBE's own oracle calls.
-NO_OPT_BACKEND = os.environ.get("LASO_NO_OPT_BACKEND", "jni").strip().lower()
-if NO_OPT_BACKEND not in {"jni", "python"}:
-    raise SystemExit(f"LASO_NO_OPT_BACKEND must be jni or python, got {NO_OPT_BACKEND!r}")
 # Join pair representation for the LR proxy: "mean" reproduces the shipped behaviour,
 # "interaction" uses [cos, Pu*Pv, |Pu-Pv|] (docs/design/2026-09-17-join-repr-experiments.md).
 PAIR_FEATURE_MODE = os.environ.get("LASO_PAIR_FEATURE_MODE", "mean").strip().lower()
@@ -402,22 +316,8 @@ def _parse_ablation_label(label):
     return (label, strat, refine_enabled)
 
 
-def _effective_phases(cluster_prof) -> int:
-    """Sampler rounds actually run. The sampler records them in its own profile; in
-    learned-calibration mode they are clipped by the sample budget, so this can be below the
-    configured ACTIVESAMPLING_N_PHASES."""
-    prof = (cluster_prof or {}).get("activeSampling_profiling") or {}
-    if prof.get("sampler") == "fixed_ce_pilot":
-        return 0  # no outer reranking rounds
-    try:
-        return int(prof["n_phases"])
-    except (KeyError, TypeError, ValueError):
-        return int(ACTIVESAMPLING_N_PHASES)
-
-
 def _laso_env_overrides():
-    global BUDGET_PCTS, QUERY_BUDGET_PCTS, KNN_K_VALUES, ACTIVESAMPLING_VS_RATIO
-    global ACTIVESAMPLING_N_PHASES
+    global BUDGET_PCTS, QUERY_BUDGET_PCTS, KNN_K_VALUES
     global ABLATION_CONFIGS, EMBEDDING_MODEL
     global EMBEDDING_MODELS_MULTIMODAL, EMBEDDING_MODELS_TEXT, results_dir
     global INCLUDE_NO_OPT, RANDOM_SEED
@@ -441,16 +341,6 @@ def _laso_env_overrides():
     v = os.environ.get("LASO_KNN_K")
     if v:
         KNN_K_VALUES = [t.strip() for t in v.replace(",", " ").split()]
-
-    v = os.environ.get("LASO_VS_RATIO")
-    if v:
-        ACTIVESAMPLING_VS_RATIO = float(v.split(",")[0].strip())
-
-    # Rounds T of the sampler. In learned-calibration mode the effective value is clipped by the
-    # sample budget (_lc_phases); the run row records what actually ran, not what was asked for.
-    v = os.environ.get("LASO_N_PHASES")
-    if v:
-        ACTIVESAMPLING_N_PHASES = int(v.split(",")[0].strip())
 
     v = os.environ.get("LASO_ABLATIONS")
     if v:
@@ -517,25 +407,11 @@ def get_spark():
     global spark
     if spark is not None:
         return spark
-    spark = SparkSession.builder.appName("activeSampling_grid") \
+    spark = SparkSession.builder.appName("PROBE") \
         .master("local[*]") \
         .config("spark.driver.memory", "32g") \
         .config("spark.executor.memory", "32g") \
-        .config("spark.jars", JAR_PATH) \
-        .config("spark.sql.extensions",
-                "com.probe.sparkai.SemanticTopKPlugin,"
-                "com.probe.sparkai.SemanticMapPlugin,"
-                "com.probe.sparkai.SemanticJoinPlugin,"
-                "com.probe.sparkai.SemanticFilterPlugin,"
-                "com.probe.sparkai.SemanticAggregatePlugin,"
-                "com.probe.sparkai.SemanticGroupByPlugin,"
-                "com.probe.sparkai.ApproximateFilterPlugin,"
-                "com.probe.sparkai.ApproximateJoinPlugin") \
-        .config("spark.driver.extraClassPath", JAR_PATH) \
-        .config("spark.executor.extraClassPath", JAR_PATH) \
         .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
-        .config("spark.sql.optimizer.columnPruning.enabled", "false") \
-        .config("spark.probe.sparkai.disableFilterReorder", "true") \
         .config("spark.default.parallelism", "1") \
         .getOrCreate()
     return spark
@@ -718,247 +594,15 @@ def _cars_gt_path(name):
     return f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/{gt_dir}/{fname}"
 
 
-def _score_cars_q8(pred_path, _gt_path_unused):
-    """Evaluate Q8 using SemBench's limit-aware ground truth sampling (LIMIT 100).
-
-    SemBench CarsEvaluator._evaluate_q8 builds a ground truth sample of exactly
-    ``limit`` rows: all correctly-matched IDs from system results plus random
-    false cases (random_state=42) to pad up to 100.
-    """
-    LIMIT = 9999
-    ground_truth_path = _cars_gt_path("Q8")
-    id_column = "car_id"
-
-    def _normalize_id(val):
-        s = str(val).strip()
-        if s.lower() == "nan" or s == "":
-            return None
-        if re.fullmatch(r"\d+\.0", s):
-            s = s.split(".")[0]
-        if s.isdigit():
-            return s
-        return None
-
-    try:
-        gt_df = pd.read_csv(ground_truth_path, dtype=str)
-        gt_df[id_column] = gt_df[id_column].apply(_normalize_id)
-        gt_df = gt_df.dropna(subset=[id_column])
-    except Exception as e:
-        print(f"  [cars_q8] Error reading ground truth: {e}")
-        return 0.0, 0.0, 0.0
-
-    try:
-        pred_df = pd.read_csv(
-            pred_path, on_bad_lines="skip", engine="python", quoting=3, dtype=str,
-        )
-        if id_column in pred_df.columns:
-            raw_predictions = pred_df[id_column].dropna().tolist()
-        else:
-            raw_predictions = pred_df.iloc[:, 0].dropna().tolist()
-
-        predicted_ids = [_normalize_id(v) for v in raw_predictions]
-        predicted_set = set(pid for pid in predicted_ids if pid is not None)
-
-        # SemBench limit-aware ground truth sampling
-        correct_ids_ix = gt_df[id_column].isin(list(predicted_set))
-        correct_ids = gt_df.loc[correct_ids_ix, :]
-
-        if correct_ids.empty:
-            n_to_sample = min(LIMIT, len(gt_df))
-            ground_truth_sample = gt_df.sample(n=n_to_sample, random_state=42) if n_to_sample > 0 else gt_df
-        elif correct_ids.shape[0] >= LIMIT:
-            ground_truth_sample = correct_ids.head(LIMIT)
-        else:
-            false_cases = gt_df[~correct_ids_ix]
-            n_needed = LIMIT - correct_ids.shape[0]
-            n_to_sample = min(n_needed, len(false_cases))
-            if n_to_sample > 0:
-                ground_truth_sample = pd.concat([correct_ids, false_cases.sample(n=n_to_sample, random_state=42)])
-            else:
-                ground_truth_sample = correct_ids
-
-        ground_truth_set = set(ground_truth_sample[id_column].dropna().astype(str).str.strip())
-        tp = len(ground_truth_set & predicted_set)
-        fp = len(predicted_set - ground_truth_set)
-        fn = len(ground_truth_set - predicted_set)
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        print(f"  [cars_q8] GT sample: {len(ground_truth_set)} (LIMIT={LIMIT}), Pred: {len(predicted_set)}")
-        print(f"  [cars_q8] TP={tp} FP={fp} FN={fn}  P={precision:.4f} R={recall:.4f} F1={f1:.4f}")
-        return precision, recall, f1
-    except Exception as e:
-        print(f"  [cars_q8] Error processing predictions: {e}")
-        return 0.0, 0.0, 0.0
-
-
-def _score_cars_q1(pred_path, gt_path):
-    """Evaluate Q1 using SemBench's LIMIT-10 limit-aware GT sampling.
-
-    Q1's natural-language spec ("Find cars that were in a
-    crash/accident/collision.") does not specify LIMIT 10, but for
-    consistency with cars_q3 we run the proxy under a LIMIT 10 cap
-    (the system output already has at most 10 car_ids) and score it
-    with the same limit-aware GT-sampling rule the SemBench
-    CarsEvaluator uses for Q3 / Q8: take all correct-match GT rows
-    plus enough random false GT rows (random_state=42) to reach 10.
-    """
-    LIMIT = 9999
-    id_column = "car_id"
-
-    def _normalize_id(val):
-        s = str(val).strip()
-        if s.lower() == "nan" or s == "":
-            return None
-        if re.fullmatch(r"\d+\.0", s):
-            s = s.split(".")[0]
-        return s if s.isdigit() else None
-
-    try:
-        gt_df = pd.read_csv(gt_path, dtype=str)
-        gt_df[id_column] = gt_df[id_column].apply(_normalize_id)
-        gt_df = gt_df.dropna(subset=[id_column])
-    except Exception as e:
-        print(f"  [cars_q1] Error reading ground truth: {e}")
-        return 0.0, 0.0, 0.0
-
-    try:
-        pred_df = pd.read_csv(
-            pred_path, on_bad_lines="skip", engine="python", quoting=3, dtype=str,
-        )
-        pred_col = id_column if id_column in pred_df.columns else pred_df.columns[0]
-        predicted_ids = [
-            pid for pid in (_normalize_id(v) for v in pred_df[pred_col].dropna())
-            if pid is not None
-        ]
-        # Defensive cap: id_expr already calls .limit(10) upstream, but
-        # truncate here too in case the CSV slipped through with extras.
-        if len(predicted_ids) > LIMIT:
-            predicted_ids = predicted_ids[:LIMIT]
-        predicted_set = set(predicted_ids)
-
-        correct_ids_ix = gt_df[id_column].isin(list(predicted_set))
-        correct_ids = gt_df.loc[correct_ids_ix, :]
-
-        if correct_ids.empty:
-            n_to_sample = min(LIMIT, len(gt_df))
-            ground_truth_sample = (
-                gt_df.sample(n=n_to_sample, random_state=42)
-                if n_to_sample > 0 else gt_df
-            )
-        elif correct_ids.shape[0] > LIMIT:
-            ground_truth_sample = correct_ids.head(LIMIT)
-        elif correct_ids.shape[0] < LIMIT:
-            false_cases = gt_df[~correct_ids_ix]
-            n_needed = LIMIT - correct_ids.shape[0]
-            n_to_sample = min(n_needed, len(false_cases))
-            if n_to_sample > 0:
-                ground_truth_sample = pd.concat(
-                    [correct_ids, false_cases.sample(n=n_to_sample, random_state=42)]
-                )
-            else:
-                ground_truth_sample = correct_ids
-        else:
-            ground_truth_sample = correct_ids
-
-        ground_truth_set = set(
-            ground_truth_sample[id_column].dropna().astype(str).str.strip()
-        )
-        tp = len(ground_truth_set & predicted_set)
-        fp = len(predicted_set - ground_truth_set)
-        fn = len(ground_truth_set - predicted_set)
-        p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-        print(f"  [cars_q1] GT sample: {len(ground_truth_set)} (LIMIT={LIMIT}), Pred: {len(predicted_set)}")
-        print(f"  [cars_q1] TP={tp} FP={fp} FN={fn}  P={p:.4f} R={r:.4f} F1={f1:.4f}")
-        return p, r, f1
-    except Exception as e:
-        print(f"  [cars_q1] Error processing predictions: {e}")
-        return 0.0, 0.0, 0.0
+def _score_cars_q8(pred_path, gt_path):
+    """Full-set F1 for the paper candidate population."""
+    gt_path = _cars_gt_path("Q8")
+    return calculate_f1_score(pred_path, gt_path)
 
 
 def _score_cars_q3(pred_path, gt_path):
-    """Evaluate Q3 using SemBench's LIMIT-10 limit-aware GT sampling.
-
-    Q3's natural-language spec ends with "Return the VIN" after "Find ten
-    cars…", i.e. LIMIT 10. The SemBench ``CarsEvaluator._evaluate_q3``
-    builds a ground-truth sample of exactly 10 rows: all correctly-matched
-    VINs from the system output, padded with random false cases
-    (random_state=42) up to 10. Precision/recall/F1 is then computed on
-    the sampled 10-row GT vs. the (already LIMIT-10) system output.
-    """
-    LIMIT = 9999
-    id_column = "vin"
-
-    try:
-        gt_df = pd.read_csv(gt_path, dtype=str)
-        if id_column not in gt_df.columns:
-            gt_df = gt_df.rename(columns={gt_df.columns[0]: id_column})
-        gt_df[id_column] = gt_df[id_column].astype(str).str.strip()
-        gt_df = gt_df[gt_df[id_column].astype(bool)]
-    except Exception as e:
-        print(f"  [cars_q3] Error reading ground truth: {e}")
-        return 0.0, 0.0, 0.0
-
-    try:
-        pred_df = pd.read_csv(
-            pred_path, on_bad_lines="skip", engine="python", quoting=3, dtype=str,
-        )
-        pred_col = id_column if id_column in pred_df.columns else pred_df.columns[0]
-        predicted_vins = (
-            pred_df[pred_col].dropna().astype(str).str.strip()
-        )
-        predicted_vins = predicted_vins[predicted_vins.astype(bool)].tolist()
-        # Enforce LIMIT 10 on the system output, mirroring the SemBench
-        # Q3 query spec (Lotus runner does .head(10)).
-        if len(predicted_vins) > LIMIT:
-            predicted_vins = predicted_vins[:LIMIT]
-        predicted_set = set(predicted_vins)
-
-        correct_ids_ix = gt_df[id_column].isin(list(predicted_set))
-        correct_ids = gt_df.loc[correct_ids_ix, :]
-
-        if correct_ids.empty:
-            n_to_sample = min(LIMIT, len(gt_df))
-            ground_truth_sample = (
-                gt_df.sample(n=n_to_sample, random_state=42)
-                if n_to_sample > 0 else gt_df
-            )
-        elif correct_ids.shape[0] > LIMIT:
-            # SemBench's evaluator raises here because a correct system
-            # would never return more than LIMIT IDs; we clamp to LIMIT
-            # after having already truncated the predictions above, so
-            # this branch is unreachable in practice. Kept for parity.
-            ground_truth_sample = correct_ids.head(LIMIT)
-        elif correct_ids.shape[0] < LIMIT:
-            false_cases = gt_df[~correct_ids_ix]
-            n_needed = LIMIT - correct_ids.shape[0]
-            n_to_sample = min(n_needed, len(false_cases))
-            if n_to_sample > 0:
-                ground_truth_sample = pd.concat(
-                    [correct_ids, false_cases.sample(n=n_to_sample, random_state=42)]
-                )
-            else:
-                ground_truth_sample = correct_ids
-        else:  # correct_ids.shape[0] == LIMIT
-            ground_truth_sample = correct_ids
-
-        ground_truth_set = set(
-            ground_truth_sample[id_column].dropna().astype(str).str.strip()
-        )
-        tp = len(ground_truth_set & predicted_set)
-        fp = len(predicted_set - ground_truth_set)
-        fn = len(ground_truth_set - predicted_set)
-        p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-        print(f"  [cars_q3] GT sample: {len(ground_truth_set)} (LIMIT={LIMIT}), Pred: {len(predicted_set)}")
-        print(f"  [cars_q3] TP={tp} FP={fp} FN={fn}  P={p:.4f} R={r:.4f} F1={f1:.4f}")
-        return p, r, f1
-    except Exception as e:
-        print(f"  [cars_q3] Error processing predictions: {e}")
-        return 0.0, 0.0, 0.0
+    """Full-set F1 for the paper candidate population."""
+    return calculate_f1_score(pred_path, gt_path)
 
 
 def _score_cars_q4(pred_path, _gt_path_unused):
@@ -1031,183 +675,6 @@ def _score_cars_q4(pred_path, _gt_path_unused):
         "predicted_count": len(pred_ids),
         "gt_count": len(gt_ids),
         "true_positives": tp,
-    }
-
-
-
-def _sembench_aggregation_errors(predicted: float, actual: float) -> dict:
-    """Reproduce SemBench `QueryMetricAggregation.calculate_errors`.
-
-    Matches the method body of
-    `_generic_aggregation_evaluation` → `m.calculate_errors(predicted, actual)`
-    in sembench/metrics/aggregation.py: one absolute error, one relative
-    error, one MAPE (which for a single-value aggregation is just the
-    percentage form of relative error).
-    """
-    abs_err = abs(float(predicted) - float(actual))
-    denom = max(abs(float(actual)), 1e-12)
-    rel_err = abs_err / denom
-    mape = rel_err * 100.0
-    return {
-        "absolute_error": float(abs_err),
-        "relative_error": float(rel_err),
-        "mape": float(mape),
-    }
-
-
-def _score_animals_q1(pred_path, gt_path):
-    """SemBench-native aggregation scoring for the zebra-count query.
-
-    Returns ``(precision, recall, f1, extra)`` where:
-      * precision/recall/f1 are the legacy count-fidelity scalar
-        ``1 - min(relative_error, 1)`` (all equal for an aggregation
-        query). Kept identical to the previous scorer so historical
-        summary CSVs remain comparable.
-      * extra is a dict of SemBench's native aggregation metrics
-        (predicted_count, gt_count, absolute_error, relative_error,
-        mape) that `collect_result` merges into the per-run results
-        CSV. This makes the common ``F1=0`` outcome diagnosable: the
-        reader can now see *how far off* the predicted count was,
-        rather than a flat zero that collapses "predicted nothing"
-        and "overshot by 10x" into the same score.
-    """
-    try:
-        pred_df = pd.read_csv(pred_path, on_bad_lines="skip", engine="python")
-    except Exception as e:
-        print(f"  [animals_q1] pred read error: {e}")
-        return 0.0, 0.0, 0.0, {
-            "predicted_count": 0, "gt_count": None,
-            "absolute_error": float("inf"), "relative_error": 1.0, "mape": 100.0,
-        }
-    predicted_count = len(pred_df)
-    try:
-        gt_df = pd.read_csv(gt_path)
-        gt_count = int(gt_df.iloc[0, 0])
-    except Exception as e:
-        print(f"  [animals_q1] gt read error: {e}")
-        return 0.0, 0.0, 0.0, {
-            "predicted_count": predicted_count, "gt_count": None,
-            "absolute_error": float("inf"), "relative_error": 1.0, "mape": 100.0,
-        }
-
-    errs = _sembench_aggregation_errors(predicted_count, gt_count)
-    f1 = 1.0 - min(errs["relative_error"], 1.0)
-    print(
-        f"  [animals_q1] GT count={gt_count}, predicted={predicted_count}, "
-        f"abs_err={errs['absolute_error']:.0f}, "
-        f"rel_err={errs['relative_error']:.4f}, "
-        f"mape={errs['mape']:.2f}%, f1_proxy={f1:.4f}"
-    )
-    return f1, f1, f1, {
-        "predicted_count": int(predicted_count),
-        "gt_count": int(gt_count),
-        "absolute_error": errs["absolute_error"],
-        "relative_error": errs["relative_error"],
-        "mape": errs["mape"],
-    }
-
-
-def _score_animals_q3(pred_path, gt_path):
-    """Top-city retrieval scored SemBench-style.
-
-    Scalar: 1 if argmax(groupBy City) ∈ GT cities else 0. This mirrors
-    `_generic_aggregation_evaluation`'s `first_num` fallback on the
-    single-value comparison — strings coerced through value_counts.
-    Extra metadata surfaces the actual predicted top-city and the GT
-    set so a 0/1 outcome is interpretable in the per-run CSV.
-    """
-    try:
-        pred_df = pd.read_csv(pred_path, on_bad_lines="skip", engine="python")
-    except Exception as e:
-        print(f"  [animals_q3] pred read error: {e}")
-        return 0.0, 0.0, 0.0, {
-            "predicted_top": None, "gt_values": None, "match": False,
-            "predicted_count": 0,
-        }
-    if "City" not in pred_df.columns or len(pred_df) == 0:
-        print(f"  [animals_q3] missing City column or empty predictions")
-        return 0.0, 0.0, 0.0, {
-            "predicted_top": None, "gt_values": None, "match": False,
-            "predicted_count": int(len(pred_df)),
-        }
-    top_city = pred_df["City"].astype(str).value_counts().idxmax()
-    try:
-        gt_df = pd.read_csv(gt_path)
-        gt_cities = set(str(c).strip() for c in gt_df.iloc[:, 0].tolist())
-    except Exception as e:
-        print(f"  [animals_q3] gt read error: {e}")
-        return 0.0, 0.0, 0.0, {
-            "predicted_top": str(top_city), "gt_values": None, "match": False,
-            "predicted_count": int(len(pred_df)),
-        }
-    match = str(top_city).strip() in gt_cities
-    f1 = 1.0 if match else 0.0
-    print(
-        f"  [animals_q3] GT cities={gt_cities}, top predicted={top_city!r}, "
-        f"match={match}, f1={f1:.4f}"
-    )
-    return f1, f1, f1, {
-        "predicted_top": str(top_city).strip(),
-        "gt_values": sorted(gt_cities),
-        "match": bool(match),
-        "predicted_count": int(len(pred_df)),
-    }
-
-
-def _score_animals_q10(pred_path, gt_path):
-    """Top (City, StationID) retrieval scored SemBench-style.
-
-    Scalar 1/0 as before. Extra metadata surfaces the predicted top
-    pair and the GT set so the per-run CSV has enough context to
-    diagnose a 0 outcome (wrong city? wrong station id? empty
-    predictions?) without replaying the experiment.
-    """
-    try:
-        pred_df = pd.read_csv(pred_path, on_bad_lines="skip", engine="python")
-    except Exception as e:
-        print(f"  [animals_q10] pred read error: {e}")
-        return 0.0, 0.0, 0.0, {
-            "predicted_top": None, "gt_values": None, "match": False,
-            "predicted_count": 0,
-        }
-    if "City" not in pred_df.columns or "StationID" not in pred_df.columns or len(pred_df) == 0:
-        print(f"  [animals_q10] missing City/StationID columns or empty predictions")
-        return 0.0, 0.0, 0.0, {
-            "predicted_top": None, "gt_values": None, "match": False,
-            "predicted_count": int(len(pred_df)),
-        }
-    pair_counts = (
-        pred_df.groupby(["City", "StationID"]).size().reset_index(name="cnt")
-        .sort_values("cnt", ascending=False)
-    )
-    top = pair_counts.iloc[0]
-    top_pair = (str(top["City"]).strip(), str(top["StationID"]).strip())
-
-    gt_tuples: set = set()
-    try:
-        gt_df = pd.read_csv(gt_path)
-        if gt_df.shape[1] >= 2:
-            gt_tuples = {
-                (str(r[0]).strip(), str(r[1]).strip())
-                for r in gt_df.itertuples(index=False)
-            }
-    except Exception:
-        pass
-    if not gt_tuples:
-        # Fallback matching semBench_q10_cluster_proxy.py's evaluator.
-        gt_tuples = {("Nairobi", "Station_A")}
-
-    match = top_pair in gt_tuples
-    f1 = 1.0 if match else 0.0
-    print(
-        f"  [animals_q10] GT pairs={gt_tuples}, top predicted={top_pair}, "
-        f"match={match}, f1={f1:.4f}"
-    )
-    return f1, f1, f1, {
-        "predicted_top": f"{top_pair[0]}|{top_pair[1]}",
-        "gt_values": sorted(f"{a}|{b}" for a, b in gt_tuples),
-        "match": bool(match),
-        "predicted_count": int(len(pred_df)),
     }
 
 
@@ -1414,10 +881,9 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
     if _decision_mode_for_ablation(ablation_label) == LEARNED_CALIBRATION_MODE:
         _lc_cfg = _learned_calibration_config(total_pairs, budget_pct)
         _router_on, _router_cap, _budget = False, 0, _lc_cfg.sample_budget
-        _phases = _lc_phases(_lc_cfg.sample_budget)
         print(f"  budget split (learned_calibration): total={_lc_cfg.total_budget} "
               f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} "
-              f"route={_lc_cfg.route_budget} phases={_phases}")
+              f"route={_lc_cfg.route_budget}")
     else:
         _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
         _budget_total, _budget, _router_cap = split_total_budget(
@@ -1464,7 +930,6 @@ def run_experiment_join(query_tag, left_df, right_df, join_prompt, gt_path,
         router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
         learned_calibration_config=_lc_cfg,
-        deferral_features=DEFERRAL_FEATURES,
         lr_C=cfg["lr_C"],
         exclude_self_pairs=(query_tag in {"ecomm_q9", "movie_q5", "movie_q7", "match122"}),
         self_pair_id_columns=("left_reviewId", "right_reviewId") if query_tag in {"movie_q5", "movie_q7"} else None,
@@ -1483,10 +948,9 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
     if _decision_mode_for_ablation(ablation_label) == LEARNED_CALIBRATION_MODE:
         _lc_cfg = _learned_calibration_config(total_rows, budget_pct)
         _router_on, _router_cap, _budget = False, 0, _lc_cfg.sample_budget
-        _phases = _lc_phases(_lc_cfg.sample_budget)
         print(f"  budget split (learned_calibration): total={_lc_cfg.total_budget} "
               f"sample={_lc_cfg.sample_budget} calib={_lc_cfg.calib_budget} "
-              f"route={_lc_cfg.route_budget} phases={_phases}")
+              f"route={_lc_cfg.route_budget}")
     else:
         _router_on = _cascade_decision_enabled(_decision_mode_for_ablation(ablation_label))
         _budget_total, _budget, _router_cap = split_total_budget(
@@ -1533,7 +997,6 @@ def run_experiment_filter(query_tag, df, filter_prompt, gt_path,
         router_max_calls=_router_cap if _router_on else None,
         decision_mode=decision_mode,
         learned_calibration_config=_lc_cfg,
-        deferral_features=DEFERRAL_FEATURES,
         lr_C=cfg["lr_C"],
         knn_k=_knn,
         viz_tag=query_tag,
@@ -1549,29 +1012,15 @@ def run_no_opt_join_experiment(query_tag, left_df, right_df, join_prompt, exp_id
     print("=" * 60)
     _begin_run_measurements(tag)
     start = time.time()
-    if NO_OPT_BACKEND == "python":
-        from proxy_model import proxy_join
-        joined_df = proxy_join(
-            left_df, right_df, join_prompt, model=MODEL,
-            url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
-            embedding_model=EMBEDDING_MODEL, max_tokens=16, max_concurrent_requests=128,
-            exclude_self_pairs=(query_tag in {"ecomm_q9", "movie_q5", "movie_q7", "match122"}),
-            self_pair_id_columns=("left_reviewId", "right_reviewId") if query_tag in {"movie_q5", "movie_q7"} else None,
-            no_proxy=True,
-        )
-        return joined_df, tag, start
-    joined_df = left_df.sem_join(
-        right=right_df, prompt=join_prompt, model=MODEL,
+    from proxy_model import proxy_join
+    joined_df = proxy_join(
+        left_df, right_df, join_prompt, model=MODEL,
         url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
-        batch_size=32, verbose=True,
-        embedding_model=EMBEDDING_MODEL,
-        max_concurrent_requests=128,
-        proxy_sample=False,
+        embedding_model=EMBEDDING_MODEL, max_tokens=16, max_concurrent_requests=128,
         exclude_self_pairs=(query_tag in {"ecomm_q9", "movie_q5", "movie_q7", "match122"}),
         self_pair_id_columns=("left_reviewId", "right_reviewId") if query_tag in {"movie_q5", "movie_q7"} else None,
-        join_sim_mode="pair",
+        no_proxy=True,
     )
-   
     return joined_df, tag, start
 
 
@@ -1583,21 +1032,11 @@ def run_no_opt_filter_experiment(query_tag, df, filter_prompt, exp_idx):
     print("=" * 60)
     _begin_run_measurements(tag)
     start = time.time()
-    if NO_OPT_BACKEND == "python":
-        from proxy_model import proxy_filter
-        # max_tokens=100 is what PROBE's filter calls get through sem_filter's default.
-        result_df = proxy_filter(
-            df, filter_prompt, model=MODEL, url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
-            embedding_model=EMBEDDING_MODEL, max_tokens=100, max_concurrent_requests=128, no_proxy=True,
-        )
-        return result_df, tag, start
-    result_df = df.sem_filter(
-        prompt=filter_prompt, model=MODEL,
-        url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
-        batch_size=32, verbose=True,
-        embedding_model=EMBEDDING_MODEL,
-        max_concurrent_requests=128,
-        proxy_sample=False,
+    from proxy_model import proxy_filter
+    # max_tokens=100 is what PROBE's filter calls get through sem_filter's default.
+    result_df = proxy_filter(
+        df, filter_prompt, model=MODEL, url=os.environ.get("PROBE_ORACLE_URL", "http://localhost:8000/v1/chat/completions"),
+        embedding_model=EMBEDDING_MODEL, max_tokens=100, max_concurrent_requests=128, no_proxy=True,
     )
     return result_df, tag, start
 
@@ -1775,9 +1214,7 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         "refine_diffusion_alpha": REFINE_DIFFUSION_ALPHA,
         # Sampler rounds actually used (clipped by the budget in learned-calibration mode) and the
         # explore rate, so a hyperparameter sweep can be read off the result row.
-        "n_phases_effective": _effective_phases(cluster_prof),
-        "vs_ratio": None if _effective_phases(cluster_prof) == 0 else ACTIVESAMPLING_VS_RATIO,
-        "sampler": (cluster_prof.get("activeSampling_profiling") or {}).get("sampler", "legacy"),
+        "sampler": (cluster_prof.get("activeSampling_profiling") or {}).get("sampler", "not_applicable"),
         "sampling_config": json.dumps((cluster_prof.get("activeSampling_profiling") or {}).get("config", {}), sort_keys=True),
         "pilot_regime": ((cluster_prof.get("activeSampling_profiling") or {}).get("pilot_state") or {}).get("regime"),
         # SAS gate decision (paper protocol): branch taken, and the gate trace (n0, k0, L0) as JSON.
@@ -1791,7 +1228,7 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         # The oracle LLM that answered (SEMBENCH_MODEL) and how completions prompts were templated.
         "oracle_model": MODEL,
         "chat_template_mode": "hf" if os.environ.get("SEMBENCH_CHAT_TEMPLATE") == "hf" else "qwen_chatml",
-        "no_opt_backend": NO_OPT_BACKEND,
+        "no_opt_backend": "python",
         # Failed oracle requests (e.g. client timeouts) on the budgeted path, and whether the pipeline abstained
         # (then only already-labelled rows are returned and no calibration / routing diagnostics exist).
         "oracle_failures": (profiling.get("oracle_budget") or {}).get("failures"),
@@ -1900,23 +1337,6 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
     out["defer_fit_time"] = cluster_prof.get("defer_fit_time")
     out["defer_optimize_time"] = cluster_prof.get("defer_optimize_time")
     out["defer_total_time"] = cluster_prof.get("defer_total_time")
-    out["deferral_method"] = cluster_prof.get("deferral_method")
-    out["deferral_n_oof_train"] = cluster_prof.get("deferral_n_oof_train")
-    out["deferral_n_train_wrong"] = cluster_prof.get("deferral_n_train_wrong")
-    out["deferral_n_train_right"] = cluster_prof.get("deferral_n_train_right")
-    out["deferral_inner_cv_auc"] = cluster_prof.get("deferral_inner_cv_auc")
-    out["deferral_inner_cv_auc_std"] = cluster_prof.get("deferral_inner_cv_auc_std")
-    out["deferral_probe_auc"] = cluster_prof.get("deferral_probe_auc")
-    out["deferral_probe_confidence_baseline_auc"] = cluster_prof.get(
-        "deferral_probe_confidence_baseline_auc"
-    )
-    out["deferral_probe_defer_rate"] = cluster_prof.get("deferral_probe_defer_rate")
-    out["deferral_probe_selective_acc"] = cluster_prof.get("deferral_probe_selective_acc")
-    out["deferral_probe_n"] = cluster_prof.get("deferral_probe_n")
-    out["deferral_defer_rate"] = cluster_prof.get("deferral_defer_rate")
-    out["deferral_chosen_hidden_dims"] = cluster_prof.get("deferral_chosen_hidden_dims")
-    out["deferral_chosen_alpha"] = cluster_prof.get("deferral_chosen_alpha")
-    out["deferral_fallback_reason"] = cluster_prof.get("deferral_fallback_reason")
     if cluster_prof.get("defer_decision_mode") == LEARNED_CALIBRATION_MODE:
         for _key in LEARNED_CALIBRATION_RESULT_KEYS:
             out[_key] = cluster_prof.get(_key)
@@ -1956,6 +1376,20 @@ def collect_result(tag, result_df, id_expr, gt_path, start, mode, budget_pct, fe
         else:
             out[col] = _v
     oracle = profiling.get("oracle_budget") or {}
+    if os.environ.get('PROBE_PAPER_JOB') and pred_csv:
+        from experiments.evaluation_export import export_evaluation
+        reference = MMQA_Q2A_GT if query_tag == 'mmqa_q2a' else MMQA_Q7_GT if query_tag == 'mmqa_q7' else None
+        effective_gt = _cars_gt_path('Q4_rows') if query_tag == 'cars_q4' else gt_path
+        annotations = f"{DATA_ROOT}/SemBench/files/animals/data/sf_{os.environ.get('LASO_ANIMALS_SF','1600')}/image_data.csv" if query_tag == 'animals_q1' else None
+        export_evaluation(query_tag, id_expr, pred_csv, effective_gt, f1,
+                          mmqa_truth=reference, annotation_source=annotations)
+        if reference is not None:
+            # The scorer uses an embedded reference. Archive exactly those
+            # bytes rather than reporting an unrelated or absent GT file.
+            gt_path = str(Path(results_dir)/f'{query_tag}_reference.json')
+            Path(gt_path).write_text(json.dumps(sorted(reference))+'\n')
+        elif query_tag == 'cars_q4':
+            gt_path = effective_gt
     out.update(oracle_unique_labels=oracle.get("unique_labels"),
                oracle_physical_attempts=oracle.get("candidate_attempts"),
                oracle_http_requests=oracle.get("http_requests"),
@@ -1977,7 +1411,6 @@ def _phase_breakdown_summary(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     agg = df.groupby("ablation")[existing].mean().reset_index()
     return agg.round(3)
-
 
 
 def maybe_append_no_opt_join(query_tag, left_df, right_df, prompt, exp_idx, id_expr,
@@ -2062,20 +1495,6 @@ def save_query_results(query_tag, rows):
     if not phase_agg.empty:
         print(f"[{query_tag}] per-ablation 4-phase timing (mean seconds):")
         print(phase_agg.to_string(index=False))
-
-    # XLSX workbook with raw + summary + phase-breakdown sheets
-    xlsx_path = f"{results_dir}{query_tag}_results.xlsx"
-    try:
-        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-            df.to_excel(writer, sheet_name="experiments", index=False)
-            if not agg.empty:
-                agg.round(4).to_excel(writer, sheet_name="ablation_summary", index=False)
-            if not phase_agg.empty:
-                phase_agg.to_excel(writer, sheet_name="phase_breakdown", index=False)
-        print(f"[{query_tag}] XLSX saved -> {xlsx_path}")
-    except Exception as e:
-        print(f"[{query_tag}] XLSX save failed (non-fatal): {e}")
-
 
 # ---------------------------------------------------------------------------
 # Ecomm Q7: sem_join (product descriptions same category + brand)
@@ -2369,44 +1788,6 @@ Review 2: "{right_reviewText}" """
 # ---------------------------------------------------------------------------
 # Movie Q7: sem_join (opposite sentiment reviews)
 # ---------------------------------------------------------------------------
-def run_movie_q7():
-    sp = get_spark()
-    csv_path = f"{DATA_ROOT}/SemBench/files/movie/data/sf_1000/Reviews.csv"
-    reviews = sp.read.option("header", "true").csv(csv_path)
-    reviews = reviews.filter(
-        (col("id") == "ant_man_and_the_wasp_quantumania") & col("reviewText").isNotNull()
-    )
-    left_df = reviews.select(col("id"), col("reviewId"), col("reviewText"))
-    right_df = reviews.select(
-        col("id").alias("id_right"), col("reviewId").alias("reviewId_right"),
-        col("reviewText").alias("reviewText_right"),
-    )
-
-    prompt = """These two movie reviews express opposite sentiments - one is positive and the other is negative.
-Review 1: "{reviewText}"
-Review 2: "{reviewText_right}" """
-
-    gt_path = f"{DATA_ROOT}/SemBench/files/movie/raw_results/ground_truth/Q7.csv"
-    total_pairs = left_df.count() * right_df.count()
-    print(f"[movie_q7] total_pairs={total_pairs}")
-
-    def id_expr(jdf):
-        return jdf.filter(col("reviewId") != col("reviewId_right")).select(
-            col("id"), col("reviewId"), col("reviewId_right").alias("reviewId2"))
-
-    scorer = calculate_pair_f1_factory(limit=None)
-    exp_idx = 1
-    for emb_model in _iter_emb_models("movie_q7"):
-        with _emb_scope("movie_q7", emb_model):
-            for abl_label, abl_strategy, abl_cs in ABLATION_CONFIGS:
-                for bp in get_budget_pcts_for_query("movie_q7"):
-                    for k_val in KNN_K_VALUES:
-                        joined_df, tag, start = run_experiment_join("movie_q7", left_df, right_df, prompt, gt_path, total_pairs, "propagation", bp, "embedding", k_val, abl_label, abl_strategy, abl_cs, exp_idx, embedding_model=emb_model)
-                        r = collect_result(tag, joined_df, id_expr, gt_path, start, "propagation", bp, "embedding", k_val, "movie_q7", ablation_label=abl_label, scorer=scorer, embedding_model=emb_model)
-                        all_results.append(r)
-                        exp_idx += 1
-
-    exp_idx = maybe_append_no_opt_join("movie_q7", left_df, right_df, prompt, exp_idx, id_expr, gt_path, scorer=scorer)
 
 
 # ---------------------------------------------------------------------------
@@ -2548,99 +1929,12 @@ def make_classify_macro_f1_scorer(id_col, cat_col, all_ids_df, fallback_category
     return _score
 
 
-def make_classify_ari_scorer(id_col, cat_col, fallback_category):
-    def _score(pred_path, gt_path):
-        from sklearn.metrics import adjusted_rand_score
-
-        def _norm(v):
-            if pd.isna(v) or str(v).lower() == "nan":
-                return None
-            return str(v).strip().lower().replace("\n", "")
-
-        pred_df = pd.read_csv(pred_path, on_bad_lines="skip", engine="python", dtype=str)
-        pred_df.columns = [c.strip().lower() for c in pred_df.columns]
-        if id_col not in pred_df.columns or cat_col not in pred_df.columns:
-            print(f"  [classify-ari] missing columns — have {list(pred_df.columns)}, need {id_col}, {cat_col}")
-            return 0.0, 0.0, 0.0
-        pred_df[id_col] = pred_df[id_col].astype(str).str.strip()
-        pred_df[cat_col] = pred_df[cat_col].apply(_norm)
-        pred_df = pred_df.dropna(subset=[cat_col]).drop_duplicates(subset=[id_col])
-
-        gt_df = pd.read_csv(gt_path, dtype=str)
-        gt_df.columns = [c.strip().lower() for c in gt_df.columns]
-        gt_df[id_col] = gt_df[id_col].astype(str).str.strip()
-        gt_df[cat_col] = gt_df[cat_col].apply(_norm)
-
-        merged = gt_df[[id_col, cat_col]].merge(
-            pred_df[[id_col, cat_col]].rename(columns={cat_col: "pred"}),
-            on=id_col, how="left",
-        )
-        n_missing = int(merged["pred"].isna().sum())
-        merged["pred"] = merged["pred"].fillna(_norm(fallback_category))
-        merged = merged.dropna(subset=[cat_col])
-
-        ari = float(adjusted_rand_score(merged[cat_col].tolist(), merged["pred"].tolist()))
-        print(
-            f"  Classify ARI - GT: {len(gt_df)}, Overlap rows: {len(merged)}, "
-            f"Fallback-filled: {n_missing} (-> '{fallback_category}')"
-        )
-        print(f"  ARI: {ari:.4f}")
-        return ari, ari, ari
-    return _score
-
-
 # ---------------------------------------------------------------------------
 # Cars Q1: sem_filter over complaint text
 #   "Find cars that were in a crash/accident/collision."
 # Per SemBench evaluator, GT = car_ids whose complaint has ``crash == True``.
 # We run sem_filter on the full complaints table and dedupe to car_id.
 # ---------------------------------------------------------------------------
-def run_cars_q1():
-    sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_157376"
-    complaints = sp.read.option("header", "true").option("inferSchema", "true") \
-        .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "text_complaints_data_157376.csv"))
-
-    complaints_df = complaints.select(
-        col("car_id").cast("string").alias("car_id"),
-        col("summary").alias("summary"),
-    )
-
-    prompt = ("You are given a textual complaint entailing whether the car was in "
-              "a crash/accident/collision. Return true if the complaint describes "
-              "a crash, accident, or collision.\n"
-              "Complaint: {summary}")
-
-    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/gt_1536/Q1_157376.csv"
-    total_rows = complaints_df.count()
-    print(f"[cars_q1] total_rows={total_rows}")
-
-    def id_expr(rdf):
-        # Match cars_q3: enforce LIMIT 10 on the system output so the
-        # SemBench limit-aware scorer can compare apples-to-apples.
-        return rdf.select(col("car_id").cast("string").alias("car_id")).distinct()
-
-    exp_idx = 1
-    for emb_model in _iter_emb_models("cars_q1"):
-        with _emb_scope("cars_q1", emb_model):
-            for abl_label, abl_strategy, abl_cs in ABLATION_CONFIGS:
-                for bp in get_budget_pcts_for_query("cars_q1"):
-                    for k_val in KNN_K_VALUES:
-                        result_df, tag, start = run_experiment_filter(
-                            "cars_q1", complaints_df, prompt, gt_path,
-                            total_rows, "propagation", bp, "embedding",
-                            k_val, abl_label, abl_strategy, abl_cs, exp_idx,
-                            embedding_model=emb_model,
-                        )
-                        r = collect_result(
-                            tag, result_df, id_expr, gt_path, start,
-                            "propagation", bp, "embedding", k_val,
-                            "cars_q1", ablation_label=abl_label, scorer=_score_cars_q1,
-                            embedding_model=emb_model,
-                        )
-                        all_results.append(r)
-                        exp_idx += 1
 
     # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
     #     "cars_q1", complaints_df, prompt, exp_idx,
@@ -2695,7 +1989,7 @@ def run_cars_q3():
     def id_expr(rdf):
         # Ground truth uses `vin`; keep one row per VIN and enforce the
         # LIMIT 10 from the SemBench Q3 spec (mirrors lotus `.head(10)`).
-        return rdf.select(col("vin").alias("vin")).distinct()
+        return rdf.select(col("vin").alias("vin"))
 
     exp_idx = 1
     for emb_model in _iter_emb_models("cars_q3"):
@@ -2757,7 +2051,7 @@ def run_cars_q4():
     def id_expr(rdf):
         # Q4 is scored against the scalar average_age, so we need the full
         # set of predicted positives (no LIMIT) to compute the mean year.
-        return rdf.select(col("car_id").cast("string").alias("car_id")).distinct()
+        return rdf.select(col("car_id").cast("string").alias("car_id"))
 
     exp_idx = 1
     for emb_model in _iter_emb_models("cars_q4"):
@@ -2789,83 +2083,6 @@ def run_cars_q4():
 # predicted category is the first sem_join match; unmatched complaints fall
 # back to the most common category ('engine').
 # ---------------------------------------------------------------------------
-def run_cars_q10():
-    sp = get_spark()
-    data_dir = f"{DATA_ROOT}/SemBench/files/cars/data/sf_157376"
-    cars = sp.read.option("header", "true").option("inferSchema", "true") \
-        .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "car_data_157376.csv"))
-    complaints = sp.read.option("header", "true").option("inferSchema", "true") \
-        .option("multiLine", "true").option("escape", '"') \
-        .csv(os.path.join(data_dir, "text_complaints_data_157376.csv"))
-    cars = cars.withColumn("registration_date", col("registration_date").cast("string"))
-
-    complaints_df = cars.join(complaints, on="car_id", how="inner") \
-        .select(
-            col("car_id").cast("string").alias("left_car_id"),
-            col("summary").alias("left_summary"),
-        )
-
-    categories = [
-        "ELECTRICAL SYSTEM", "POWER TRAIN", "ENGINE", "STEERING", "SERVICE BRAKES",
-        "STRUCTURE", "AIR BAGS", "ENGINE AND ENGINE COOLING", "VEHICLE SPEED CONTROL",
-        "VISIBILITY/WIPER", "FUEL/PROPULSION SYSTEM", "FORWARD COLLISION AVOIDANCE",
-        "EXTERIOR LIGHTING", "SUSPENSION", "FUEL SYSTEM", "VISIBILITY", "WHEELS",
-        "SEAT BELTS", "BACK OVER PREVENTION", "TIRES", "SEATS", "LATCHES/LOCKS/LINKAGES",
-        "LANE DEPARTURE", "EQUIPMENT",
-    ]
-    cat_values_sql = ", ".join(
-        "('{}')".format(c.replace("'", "''")) for c in categories
-    )
-    categories_df = sp.sql(
-        f"SELECT col1 AS right_category FROM VALUES {cat_values_sql}"
-    )
-
-    prompt = """Classify this car complaint. Does it fall under the problem category "{right_category}"?
-Answer True if the complaint is primarily about this category, False otherwise.
-
-Complaint: {left_summary}"""
-
-    gt_path = f"{DATA_ROOT}/SemBench/files/cars/raw_results/ground_truth/gt_1536/Q10_157376.csv"
-    n_complaints = complaints_df.count()
-    total_pairs = n_complaints * len(categories)
-    print(f"[cars_q10] n_complaints={n_complaints}, n_categories={len(categories)}, total_pairs={total_pairs}")
-
-    def id_expr(jdf):
-        car_col = "left_car_id" if "left_car_id" in jdf.columns else "car_id"
-        cat_col = "right_category" if "right_category" in jdf.columns else "category"
-        return jdf.select(
-            col(car_col).cast("string").alias("car_id"),
-            col(cat_col).alias("problem_category"),
-        )
-
-    scorer = make_classify_macro_f1_scorer(
-        id_col="car_id",
-        cat_col="problem_category",
-        all_ids_df=complaints_df,
-        fallback_category="ENGINE",
-    )
-
-    exp_idx = 1
-    for emb_model in _iter_emb_models("cars_q10"):
-        with _emb_scope("cars_q10", emb_model):
-            for abl_label, abl_strategy, abl_cs in ABLATION_CONFIGS:
-                for bp in get_budget_pcts_for_query("cars_q10"):
-                    for k_val in KNN_K_VALUES:
-                        joined_df, tag, start = run_experiment_join(
-                            "cars_q10", complaints_df, categories_df, prompt, gt_path,
-                            total_pairs, "propagation", bp, "embedding",
-                            k_val, abl_label, abl_strategy, abl_cs, exp_idx,
-                            embedding_model=emb_model,
-                        )
-                        r = collect_result(
-                            tag, joined_df, id_expr, gt_path, start,
-                            "propagation", bp, "embedding", k_val,
-                            "cars_q10", ablation_label=abl_label, scorer=scorer,
-                            embedding_model=emb_model,
-                        )
-                        all_results.append(r)
-                        exp_idx += 1
 
     # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment(
     #     "cars_q10", complaints_df, categories_df, prompt, exp_idx,
@@ -2882,6 +2099,37 @@ Complaint: {left_summary}"""
 # ---------------------------------------------------------------------------
 # Cars Q8: sem_filter (multimodal — puncture AND paint scratches)
 # ---------------------------------------------------------------------------
+def run_cars_q7():
+    """Paper case-study Q7: dented images, N=30,130 at sf_157376."""
+    from experiments.workload_ground_truth import cars_q7_image_ground_truth
+    sp = get_spark()
+    images = sp.read.option("header", "true").option("inferSchema", "true") \
+        .option("multiLine", "true").option("escape", '"').csv(_cars_data_file("image_car_data"))
+    images = images.withColumn("image_path", concat(lit(f"{DATA_ROOT}/SemBench/"), col("image_path")))
+    prompt = ("You are given an image of a vehicle or its parts. "
+              "Return true if the car is dented. Image: {image:image_path}")
+    gt_path = cars_q7_image_ground_truth(DATA_ROOT, _cars_sf(), results_dir)
+    total_rows = images.count()
+    def id_expr(rdf):
+        return rdf.select(col("car_id").cast("string").alias("car_id"))
+    exp_idx = 1
+    for emb_model in _iter_emb_models("cars_q7"):
+        with _emb_scope("cars_q7", emb_model):
+            for abl_label, abl_strategy, abl_cs in ABLATION_CONFIGS:
+                for bp in get_budget_pcts_for_query("cars_q7"):
+                    for k_val in KNN_K_VALUES:
+                        result_df, tag, start = run_experiment_filter(
+                            "cars_q7", images, prompt, gt_path, total_rows, "propagation", bp,
+                            "embedding", k_val, abl_label, abl_strategy, abl_cs, exp_idx,
+                            embedding_model=emb_model)
+                        all_results.append(collect_result(
+                            tag, result_df, id_expr, gt_path, start, "propagation", bp,
+                            "embedding", k_val, "cars_q7", ablation_label=abl_label,
+                            embedding_model=emb_model))
+                        exp_idx += 1
+    maybe_append_no_opt_filter("cars_q7", images, prompt, exp_idx, id_expr, gt_path)
+
+
 def run_cars_q8():
     sp = get_spark()
     # scale factor 由 LASO_CARS_SF(回退 CARS_SF)选择(默认 157376 = PROBE 已跑的配置)
@@ -3047,13 +2295,12 @@ Image: {image:left_image_filepath}"""
 # ---------------------------------------------------------------------------
 
 def _animals_load_df():
-    sp = get_spark()
-    scale = 100
-    data_dir = f"{DATA_ROOT}/SemBench/files/animals/data/sf_{scale}"
-    df = sp.read.option("header", "true").option("inferSchema", "true") \
-        .option("escape", '"') \
-        .csv(os.path.join(data_dir, "image_data.csv"))
-    return df
+    # File-order IDs distinguish repeated image rows and match evaluation annotations.
+    from proxy_model import _pandas_to_spark
+    scale = int(os.environ.get('LASO_ANIMALS_SF','1600'))
+    frame = pd.read_csv(f'{DATA_ROOT}/SemBench/files/animals/data/sf_{scale}/image_data.csv')
+    frame['row_id'] = np.arange(len(frame))
+    return _pandas_to_spark(get_spark(),frame.drop(columns=['Species']))
 
 
 ANIMALS_PROMPT = "Does the image contain a zebra? Image: {image:ImagePath}"
@@ -3062,13 +2309,14 @@ ANIMALS_PROMPT = "Does the image contain a zebra? Image: {image:ImagePath}"
 def run_animals_q1():
     df = _animals_load_df()
     prompt = ANIMALS_PROMPT
-    gt_path = f"{DATA_ROOT}/SemBench/files/animals/raw_results/ground_truth/Q1.csv"
+    from experiments.workload_ground_truth import animals_q1_ground_truth
+    gt_path = animals_q1_ground_truth(DATA_ROOT,os.environ.get('LASO_ANIMALS_SF','1600'),results_dir)
     total_rows = df.count()
     print(f"[animals_q1] total_rows={total_rows}")
 
-    # Keep ImagePath for the scorer; it just counts rows.
+    # Report row-level F1 for the paper's semantic filter.
     def id_expr(rdf):
-        return rdf.select("ImagePath")
+        return rdf.select("row_id")
 
     exp_idx = 1
     for emb_model in _iter_emb_models("animals_q1"):
@@ -3085,46 +2333,14 @@ def run_animals_q1():
                         r = collect_result(
                             tag, result_df, id_expr, gt_path, start,
                             "propagation", bp, "embedding", k_val,
-                            "animals_q1", ablation_label=abl_label, scorer=_score_animals_q1,
+                            "animals_q1", ablation_label=abl_label,
                             embedding_model=emb_model,
                         )
                         all_results.append(r)
                         exp_idx += 1
 
-    exp_idx = maybe_append_no_opt_filter("animals_q1", df, prompt, exp_idx, id_expr, gt_path, scorer=_score_animals_q1)
+    exp_idx = maybe_append_no_opt_filter("animals_q1", df, prompt, exp_idx, id_expr, gt_path)
 
-
-def run_animals_q3():
-    df = _animals_load_df()
-    prompt = ANIMALS_PROMPT
-    gt_path = f"{DATA_ROOT}/SemBench/files/animals/raw_results/ground_truth/Q3.csv"
-    total_rows = df.count()
-    print(f"[animals_q3] total_rows={total_rows}")
-
-    # Keep ImagePath + City so the scorer can do the groupBy in pandas.
-    def id_expr(rdf):
-        return rdf.select("ImagePath", "City")
-
-    exp_idx = 1
-    for emb_model in _iter_emb_models("animals_q3"):
-        with _emb_scope("animals_q3", emb_model):
-            for abl_label, abl_strategy, abl_cs in ABLATION_CONFIGS:
-                for bp in get_budget_pcts_for_query("animals_q3"):
-                    for k_val in KNN_K_VALUES:
-                        result_df, tag, start = run_experiment_filter(
-                            "animals_q3", df, prompt, gt_path,
-                            total_rows, "propagation", bp, "embedding",
-                            k_val, abl_label, abl_strategy, abl_cs, exp_idx,
-                            embedding_model=emb_model,
-                        )
-                        r = collect_result(
-                            tag, result_df, id_expr, gt_path, start,
-                            "propagation", bp, "embedding", k_val,
-                            "animals_q3", ablation_label=abl_label, scorer=_score_animals_q3,
-                            embedding_model=emb_model,
-                        )
-                        all_results.append(r)
-                        exp_idx += 1
 
     # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
     #     "animals_q3", df, prompt, exp_idx,
@@ -3138,45 +2354,13 @@ def run_animals_q3():
     # all_results.append(no_opt_r)
 
 
-def run_animals_q10():
-    df = _animals_load_df()
-    prompt = ANIMALS_PROMPT
-    gt_path = f"{DATA_ROOT}/SemBench/files/animals/raw_results/ground_truth/Q10.csv"
-    total_rows = df.count()
-    print(f"[animals_q10] total_rows={total_rows}")
-
-    # Keep ImagePath + City + StationID so the scorer can do the groupBy.
-    def id_expr(rdf):
-        return rdf.select("ImagePath", "City", "StationID")
-
-    exp_idx = 1
-    for emb_model in _iter_emb_models("animals_q10"):
-        with _emb_scope("animals_q10", emb_model):
-            for abl_label, abl_strategy, abl_cs in ABLATION_CONFIGS:
-                for bp in get_budget_pcts_for_query("animals_q10"):
-                    for k_val in KNN_K_VALUES:
-                        result_df, tag, start = run_experiment_filter(
-                            "animals_q10", df, prompt, gt_path,
-                            total_rows, "propagation", bp, "embedding",
-                            k_val, abl_label, abl_strategy, abl_cs, exp_idx,
-                            embedding_model=emb_model,
-                        )
-                        r = collect_result(
-                            tag, result_df, id_expr, gt_path, start,
-                            "propagation", bp, "embedding", k_val,
-                            "animals_q10", ablation_label=abl_label, scorer=_score_animals_q10,
-                            embedding_model=emb_model,
-                        )
-                        all_results.append(r)
-                        exp_idx += 1
-
     # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_filter_experiment(
     #     "animals_q10", df, prompt, exp_idx,
     # )
     # no_opt_r = collect_result(
     #     no_opt_tag, no_opt_df, id_expr, gt_path, no_opt_start,
     #     "no_opt", 100, "n/a", "n/a",
-    #     "animals_q10", ablation_label="no_opt", scorer=_score_animals_q10,
+    #     "animals_q10", ablation_label="no_opt"0,
     #     embedding_model=EMBEDDING_MODEL,
     # )
     # all_results.append(no_opt_r)
@@ -3189,50 +2373,6 @@ def run_animals_q10():
 # has been executed to materialise three CSVs under <data_dir>/gt/:
 #   <name>_left.csv, <name>_right.csv, gt_pairwise_<name>.csv (label=1 only).
 # ---------------------------------------------------------------------------
-def _joinml_run(query_tag, data_dir, left_name, right_name, gt_name, prompt,
-                id_cols=("left_id", "right_id")):
-    sp = get_spark()
-    gt_dir = os.path.join(data_dir, "gt")
-    left_csv = os.path.join(gt_dir, left_name)
-    right_csv = os.path.join(gt_dir, right_name)
-    gt_path = os.path.join(gt_dir, gt_name)
-
-    left_df = sp.read.option("header", "true").option("multiLine", "true") \
-        .option("escape", '"').csv(left_csv)
-    right_df = sp.read.option("header", "true").option("multiLine", "true") \
-        .option("escape", '"').csv(right_csv)
-
-    total_pairs = left_df.count() * right_df.count()
-    print(f"[{query_tag}] total_pairs={total_pairs}  left={left_df.count()}  right={right_df.count()}")
-
-    def id_expr(jdf):
-        return jdf.select(
-            col(id_cols[0]).cast("string").alias(id_cols[0]),
-            col(id_cols[1]).cast("string").alias(id_cols[1]),
-        )
-
-    scorer = calculate_pair_f1_factory(limit=None)
-
-    exp_idx = 1
-    for emb_model in _iter_emb_models(query_tag):
-        with _emb_scope(query_tag, emb_model):
-            for abl_label, abl_strategy, abl_cs in ABLATION_CONFIGS:
-                for bp in get_budget_pcts_for_query(query_tag):
-                    for k_val in KNN_K_VALUES:
-                        joined_df, tag, start = run_experiment_join(
-                            query_tag, left_df, right_df, prompt, gt_path, total_pairs,
-                            "propagation", bp, "embedding", k_val,
-                            abl_label, abl_strategy, abl_cs, exp_idx,
-                            embedding_model=emb_model,
-                        )
-                        r = collect_result(
-                            tag, joined_df, id_expr, gt_path, start,
-                            "propagation", bp, "embedding", k_val,
-                            query_tag, ablation_label=abl_label, scorer=scorer,
-                            embedding_model=emb_model,
-                        )
-                        all_results.append(r)
-                        exp_idx += 1
 
     # no_opt_df, no_opt_tag, no_opt_start = run_no_opt_join_experiment(
     #     query_tag, left_df, right_df, prompt, exp_idx,
@@ -3250,69 +2390,21 @@ def _joinml_run(query_tag, data_dir, left_name, right_name, gt_name, prompt,
 # VeRi Q1: sem_join (same vehicle across two camera groups)
 # Prompt verbatim from JoinML paper §C.2.
 # ---------------------------------------------------------------------------
-def run_veri_q1():
-    data_dir = f"{DATA_ROOT}/SemBench/files/veri"
-    prompt = ("Two images show the same vehicle: "
-              "{image:left_image} {image:right_image}")
-    _joinml_run(
-        query_tag="veri_q1",
-        data_dir=data_dir,
-        left_name="veri_left.csv",
-        right_name="veri_right.csv",
-        gt_name="gt_pairwise_veri.csv",
-        prompt=prompt,
-    )
 
 
 # ---------------------------------------------------------------------------
 # Flickr30K Q1: sem_join (caption describes image)
 # ---------------------------------------------------------------------------
-def run_flickr_q1():
-    data_dir = f"{DATA_ROOT}/SemBench/files/flickr30k"
-    prompt = ("Caption {text:right_caption} describes the image "
-              "{image:left_image}")
-    _joinml_run(
-        query_tag="flickr_q1",
-        data_dir=data_dir,
-        left_name="flickr_left.csv",
-        right_name="flickr_right.csv",
-        gt_name="gt_pairwise_flickr.csv",
-        prompt=prompt,
-    )
 
 
 # ---------------------------------------------------------------------------
 # Roxford Q1: sem_join (same landmark across gallery and queries)
 # ---------------------------------------------------------------------------
-def run_roxford_q1():
-    data_dir = f"{DATA_ROOT}/SemBench/files/roxford5k"
-    prompt = ("Two images show the same landmark: "
-              "{image:left_image} {image:right_image}")
-    _joinml_run(
-        query_tag="roxford_q1",
-        data_dir=data_dir,
-        left_name="roxford_left.csv",
-        right_name="roxford_right.csv",
-        gt_name="gt_pairwise_roxford.csv",
-        prompt=prompt,
-    )
 
 
 # ---------------------------------------------------------------------------
 # Company Q1: sem_join (entity resolution on company descriptions)
 # ---------------------------------------------------------------------------
-def run_company_q1():
-    data_dir = f"{DATA_ROOT}/SemBench/files/company"
-    prompt = ("Company 1: {text:left_description} and "
-              "Company 2: {text:right_description} are the same company.")
-    _joinml_run(
-        query_tag="company_q1",
-        data_dir=data_dir,
-        left_name="company_left.csv",
-        right_name="company_right.csv",
-        gt_name="gt_pairwise_company.csv",
-        prompt=prompt,
-    )
 
 LROBENCH_DATABASES_DIR = os.environ.setdefault(
     "LROBENCH_DATABASES_DIR", f"{DATA_ROOT}/databases"
@@ -3376,184 +2468,6 @@ def _run_match_join(query_tag, left_df, right_df, prompt, gt_path,
                         exp_idx += 1
 
     exp_idx = maybe_append_no_opt_join(query_tag, left_df, right_df, prompt, exp_idx, id_expr, gt_path)
-
-
-def run_match102():
-    sp = get_spark()
-    customers = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/car_retails/customers.csv")
-    )
-    customers = customers.filter(col("creditLimit") > 100000)
-    left_df = customers.select(
-        col("customerNumber").cast("int").alias("left_customerNumber"),
-        col("city").alias("left_city"),
-    )
-
-    offices = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/car_retails/offices.csv")
-    )
-    right_df = offices.select(col("territory").alias("right_territory")).distinct()
-
-    prompt = """Determine whether the customer's city is located within the office's sales territory.
-
-Customer city: {left_city}
-Sales territory: {right_territory}"""
-
-    truth = [
-        (114, 'APAC'), (119, 'EMEA'), (141, 'EMEA'), (146, 'EMEA'),
-        (148, 'APAC'), (157, 'NA'),   (187, 'EMEA'), (227, 'EMEA'),
-        (249, 'EMEA'), (259, 'EMEA'), (276, 'APAC'), (278, 'EMEA'),
-        (286, 'NA'),   (298, 'EMEA'), (319, 'NA'),   (363, 'NA'),
-        (386, 'EMEA'), (448, 'EMEA'), (458, 'EMEA'), (496, 'APAC'),
-    ]
-    gt_path = _write_match_gt_csv("match102", truth)
-    _run_match_join("match102", left_df, right_df, prompt, gt_path,
-                    "left_customerNumber", "right_territory")
-
-
-def run_match104():
-    sp = get_spark()
-    comments = (
-        sp.read.option("header", "true").option("multiLine", "true")
-        .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/codebase_community/comments.csv")
-    )
-    # pandas `comments[:10]` takes the first 10 rows in file order; ordering
-    # by Id (monotonic in the raw export) is a stable Spark equivalent.
-    comments = comments.orderBy(col("Id")).limit(10)
-    left_df = comments.select(
-        col("Id").cast("int").alias("left_Id"),
-        col("Text").alias("left_Text"),
-    )
-
-    tags = (
-        sp.read.option("header", "true").option("multiLine", "true")
-        .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/codebase_community/tags.csv")
-    )
-    tags = tags.orderBy(col("Count").desc()).limit(10)
-    right_df = tags.select(
-        col("Id").cast("int").alias("right_Id"),
-        col("TagName").alias("right_TagName"),
-    )
-
-    prompt = """Determine whether the comment's content is directly related to the tag's topic.
-
-Comment: {left_Text}
-Tag: {right_TagName}"""
-
-    truth = [(2, 41), (4, 9), (9, 41), (11, 41)]
-    gt_path = _write_match_gt_csv("match104", truth)
-    _run_match_join("match104", left_df, right_df, prompt, gt_path,
-                    "left_Id", "right_Id")
-
-
-def run_match105():
-    sp = get_spark()
-    customer = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/shipping/customer.csv")
-    )
-    customer = customer.filter(col("cust_type") == "wholesaler")
-    left_df = customer.select(
-        col("cust_id").cast("int").alias("left_cust_id"),
-        col("state").alias("left_state"),
-    )
-
-    city = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/shipping/city.csv")
-    )
-    city = city.filter(col("population") > 600000)
-    right_df = city.select(col("state").alias("right_state")).distinct()
-
-    prompt = """Determine whether the two-letter abbreviated US state code refers to exactly the same state as the full state name.
-
-Abbreviated state code: {left_state}
-Full state name: {right_state}"""
-
-    truth = [
-        (381, 'Florida'),     (615, 'Florida'),     (618, 'Florida'),
-        (1575, 'California'), (1685, 'California'), (1769, 'Texas'),
-        (2001, 'California'), (2799, 'Texas'),      (3288, 'Texas'),
-        (3660, 'Maryland'),   (4353, 'Texas'),      (4869, 'Arizona'),
-    ]
-    gt_path = _write_match_gt_csv("match105", truth)
-    _run_match_join("match105", left_df, right_df, prompt, gt_path,
-                    "left_cust_id", "right_state")
-
-
-def run_match106():
-    sp = get_spark()
-    customer = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/shipping/customer.csv")
-    )
-    customer = customer.filter(col("annual_revenue") > 45000000)
-    left_df = customer.select(
-        col("cust_id").cast("int").alias("left_cust_id"),
-        col("state").alias("left_state"),
-    )
-
-    city = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/shipping/city.csv")
-    )
-    city = city.filter(col("population") > 600000)
-    right_df = city.select(col("state").alias("right_state")).distinct()
-
-    prompt = """Determine whether the two-letter abbreviated US state code refers to exactly the same state as the full state name.
-
-Abbreviated state code: {left_state}
-Full state name: {right_state}"""
-
-    truth = [
-        (721, 'Florida'),     (1724, 'Ohio'),       (2001, 'California'),
-        (2434, 'Ohio'),       (2799, 'Texas'),      (3320, 'California'),
-        (3447, 'California'),
-    ]
-    gt_path = _write_match_gt_csv("match106", truth)
-    _run_match_join("match106", left_df, right_df, prompt, gt_path,
-                    "left_cust_id", "right_state")
-
-
-def run_match107():
-    sp = get_spark()
-    team = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/european_football_2/Team.csv")
-    )
-    team = team.filter(col("team_long_name").startswith("P"))
-    left_df = team.select(
-        col("id").cast("int").alias("left_id"),
-        col("team_long_name").alias("left_team_long_name"),
-    )
-
-    country = (
-        sp.read.option("header", "true").option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/european_football_2/Country.csv")
-    )
-    right_df = country.select(
-        col("id").cast("int").alias("right_id"),
-        col("name").alias("right_name"),
-    )
-
-    prompt = """Determine whether the football team belongs to (plays its domestic league in) the listed country.
-
-Team: {left_team_long_name}
-Country: {right_name}"""
-
-    truth = [
-        (3476, 1729),   (9548, 4769),   (20532, 10257), (21292, 10257),
-        (23523, 10257), (26556, 13274), (29000, 13274), (31444, 15722),
-        (31445, 15722), (31448, 15722), (31457, 15722), (32891, 15722),
-        (33377, 15722), (36248, 17642), (41673, 19694),
-    ]
-    gt_path = _write_match_gt_csv("match107", truth)
-    _run_match_join("match107", left_df, right_df, prompt, gt_path,
-                    "left_id", "right_id")
 
 
 # ---------------------------------------------------------------------------
@@ -3641,69 +2555,6 @@ Supplier B: {right_Supplier}"""
                     "left_Supplier", "right_Supplier")
 
 
-def run_match122():
-    sp = get_spark()
-    staff = (
-        sp.read.option("header", "true").option("multiLine", "true")
-        .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/nextiaJD/"
-             "SCS_Staff_Salaries_data_30th_June 2010.csv")
-    )
-    staff = staff.select(col("Name").alias("_name")).dropna().dropDuplicates(["_name"])
-    left_df  = staff.select(col("_name").alias("left_Name"))
-    right_df = staff.select(col("_name").alias("right_Name"))
-
-    prompt = """Determine whether the two staff members share the same first name but are different people (different full names).
-
-Staff A: {left_Name}
-Staff B: {right_Name}"""
-
-    truth = [
-        ('David Ashbourne', 'David Pimm'),
-        ('David Pimm',      'David Ashbourne'),
-    ]
-    gt_path = _write_match_gt_csv("match122", truth)
-    _run_match_join("match122", left_df, right_df, prompt, gt_path,
-                    "left_Name", "right_Name")
-
-
-def run_match125():
-    sp = get_spark()
-    merchant = (
-        sp.read.option("header", "true").option("multiLine", "true")
-        .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/santos/"
-             "purchasing-card-spend-jul2015.csv")
-    )
-    left_df = (
-        merchant.select(col("Procurement (Merchant) Category").alias("left_Category"))
-                .dropna().dropDuplicates(["left_Category"])
-    )
-
-    rm = (
-        sp.read.option("header", "true").option("multiLine", "true")
-        .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/santos/rm-mr-2009-eng.csv")
-    )
-    right_df = (
-        rm.select(col("MINE").alias("right_Category"))
-          .dropna().dropDuplicates(["right_Category"])
-    )
-
-    prompt = """Determine whether the two procurement/department categories cover highly similar subject matter (so one could semantically substitute for the other, e.g. "Human Resources" ≈ "Human Resources and Skills Development").
-
-Category A: {left_Category}
-Category B: {right_Category}"""
-
-    truth = [
-        ('Human Resources  ',        'Human Resources and Skills Development'),
-        ('Environmental Services  ', 'Environment'),
-    ]
-    gt_path = _write_match_gt_csv("match125", truth)
-    _run_match_join("match125", left_df, right_df, prompt, gt_path,
-                    "left_Category", "right_Category")
-
-
 def run_match202():
     """LRO-Bench 202: high-rated movies, 24 x 16 = 384 candidates."""
     sp = get_spark()
@@ -3740,50 +2591,6 @@ Rotten Tomatoes: title={right_Title} | year={right_Year} | director={right_Direc
     truth = [('a-456', 'b-434'), ('a-569', 'b-534'), ('a-701', 'b-653')]
     gt_path = _write_match_gt_csv("match202", truth)
     _run_match_join("match202", left_df, right_df, prompt, gt_path,
-                    "left_ID", "right_ID")
-
-
-def run_match203():
-    sp = get_spark()
-    imdb = (
-        sp.read.option("header", "true").option("multiLine", "true")
-        .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/movies/imdb.csv")
-    )
-    imdb = imdb.filter(col("Rating").cast("double") < 2.3)
-    left_df = imdb.select(
-        col("ID").alias("left_ID"),
-        col("Title").alias("left_Title"),
-        col("Year").alias("left_Year"),
-        col("Director").alias("left_Director"),
-        col("Genre").alias("left_Genre"),
-    )
-
-    tomato = (
-        sp.read.option("header", "true").option("multiLine", "true")
-        .option("escape", '"').option("inferSchema", "true")
-        .csv(f"{LROBENCH_DATABASES_DIR}/movies/rotten_tomatoes.csv")
-    )
-    tomato = tomato.filter(col("Rating").cast("double") < 2.3)
-    right_df = tomato.select(
-        col("ID").alias("right_ID"),
-        col("Title").alias("right_Title"),
-        col("Year").alias("right_Year"),
-        col("Director").alias("right_Director"),
-        col("Genre").alias("right_Genre"),
-    )
-
-    prompt = """Determine whether the two records refer to the same movie (same film, identified by matching title + year + director even if formatting differs).
-
-IMDb: title={left_Title} | year={left_Year} | director={left_Director} | genre={left_Genre}
-Rotten Tomatoes: title={right_Title} | year={right_Year} | director={right_Director} | genre={right_Genre}"""
-
-    truth = [
-        ('a-708',  'b-662'),
-        ('a-1775', 'b-1553'),
-    ]
-    gt_path = _write_match_gt_csv("match203", truth)
-    _run_match_join("match203", left_df, right_df, prompt, gt_path,
                     "left_ID", "right_ID")
 
 
@@ -3847,35 +2654,20 @@ QUERY_RUNNERS = {
     "ecomm_q9": run_ecomm_q9,
     "ecomm_q13": run_ecomm_q13,
     "movie_q5": run_movie_q5,
-    "movie_q7": run_movie_q7,
     "mmqa_q2a": run_mmqa_q2a,
     "mmqa_q7": run_mmqa_q7,
-    "cars_q1": run_cars_q1,
 
     "cars_q3": run_cars_q3,
     "cars_q4": run_cars_q4,
+    "cars_q7": run_cars_q7,
     "cars_q8": run_cars_q8,
     # Animals benchmark (SemBench Q1/Q3/Q10)
     "animals_q1": run_animals_q1,
-    # "animals_q3": run_animals_q3,
-    # "animals_q10": run_animals_q10,
     # # JoinML paper datasets
-    # "veri_q1": run_veri_q1,
-    # "flickr_q1": run_flickr_q1,
-    # "roxford_q1": run_roxford_q1,
-    # "company_q1": run_company_q1,
     # LRobench match queries (text-text semantic joins)
-    # "match102": run_match102,
-    # "match104": run_match104,
-    # "match105": run_match105,
-    # "match106": run_match106,
-    # "match107": run_match107,
     "match113": run_match113,
     "match121": run_match121,
-    # "match122": run_match122,
-    # "match125": run_match125,
     "match202": run_match202,
-    # "match203": run_match203,
     "match305": run_match305,
 }
 
@@ -3903,7 +2695,6 @@ if __name__ == "__main__":
         print(f"MODEL (SEMBENCH_MODEL) = {MODEL}")
         print(f"DATA_ROOT      = {DATA_ROOT}")
         print(f"LROBENCH_DATABASES_DIR = {LROBENCH_DATABASES_DIR}")
-        print(f"JAR_PATH       = {JAR_PATH}")
         print(f"RANDOM_SEED    = {RANDOM_SEED}")
         print(f"INCLUDE_NO_OPT = {INCLUDE_NO_OPT}")
         print(f"results_dir    = {results_dir}")
@@ -3935,170 +2726,6 @@ if __name__ == "__main__":
     summary_path = f"{results_dir}{_run_tag}_grid_summary.csv"
     summary_df.to_csv(summary_path, index=False)
     print(f"\nSummary saved to {summary_path}")
-
-    # Per-query × ablation mean 4-phase breakdown (sums to duration_s)
-    phase_cols = ["phase_embedding_s", "phase_sampling_s",
-                  "phase_training_s", "phase_prediction_s", "duration_s"]
-    _existing_phase_cols = [c for c in phase_cols if c in summary_df.columns]
-    phase_summary = pd.DataFrame()
-    if _existing_phase_cols and "query" in summary_df.columns and "ablation" in summary_df.columns:
-        phase_summary = (
-            summary_df.groupby(["query", "ablation"])[_existing_phase_cols]
-            .mean()
-            .round(3)
-            .reset_index()
-        )
-        print("\n--- 4-Phase Breakdown (mean seconds, sums to duration_s) ---")
-        print(phase_summary.to_string(index=False))
-
-    # XLSX workbook with multiple sheets
-    xlsx_path = f"{results_dir}{_run_tag}_grid_summary.xlsx"
-    try:
-        with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
-            summary_df.to_excel(writer, sheet_name="all_experiments", index=False)
-            if not phase_summary.empty:
-                phase_summary.to_excel(writer, sheet_name="phase_breakdown", index=False)
-        print(f"XLSX summary saved to {xlsx_path}")
-    except Exception as e:
-        print(f"XLSX save failed (non-fatal): {e}")
-
-    if not summary_df.empty and "f1" in summary_df.columns:
-        valid = summary_df[summary_df["f1"] > 0]
-        if not valid.empty:
-            best = valid.loc[valid["f1"].idxmax()]
-            print(f"\nBest config: {best['experiment']} (F1={best['f1']:.4f})")
-
-    # --- Ablation study: per-query and average F1/latency by config ---
-    if not summary_df.empty and "ablation" in summary_df.columns:
-        print("\n" + "=" * 80)
-        print("ABLATION STUDY")
-        print("=" * 80)
-
-        ablation_agg = summary_df.groupby(["query", "ablation"]).agg(
-            f1_mean=("f1", "mean"),
-            f1_max=("f1", "max"),
-            latency_mean=("duration_s", "mean"),
-        ).reset_index()
-
-        # Per-query pivot: rows=query, columns=ablation, values=f1_mean
-        f1_pivot = ablation_agg.pivot(index="query", columns="ablation", values="f1_mean")
-        lat_pivot = ablation_agg.pivot(index="query", columns="ablation", values="latency_mean")
-
-        # Add average row
-        f1_pivot.loc["AVERAGE"] = f1_pivot.mean()
-        lat_pivot.loc["AVERAGE"] = lat_pivot.mean()
-
-        print("\n--- F1 (mean over budgets × k) ---")
-        print(f1_pivot.round(4).to_string())
-
-        print("\n--- Latency (mean, seconds) ---")
-        print(lat_pivot.round(2).to_string())
-
-        # Delta table for the deferral-policy ablation:
-        # learned_deferral - trust_proxy compares "partial rollback to LLM"
-        # against "trust every proxy decision" under the same activeSampling+Bias Diffusion + Homogeneity Propagation
-        # ablation family.
-        print("\n--- Deferral Policy Delta ---")
-        trust_col = "activeSampling+refine+trust_proxy"
-        learned_col = "activeSampling+refine+learned_deferral"
-        if trust_col in f1_pivot.columns and learned_col in f1_pivot.columns:
-            for q_idx in f1_pivot.index:
-                trust_f1 = f1_pivot.loc[q_idx].get(trust_col, float("nan"))
-                learned_f1 = f1_pivot.loc[q_idx].get(learned_col, float("nan"))
-                trust_lat = lat_pivot.loc[q_idx].get(trust_col, float("nan"))
-                learned_lat = lat_pivot.loc[q_idx].get(learned_col, float("nan"))
-                d_f1 = learned_f1 - trust_f1 if pd.notna(learned_f1) and pd.notna(trust_f1) else float("nan")
-                d_lat = learned_lat - trust_lat if pd.notna(learned_lat) and pd.notna(trust_lat) else float("nan")
-                print(
-                    f"  {q_idx:20s}  "
-                    f"trust_f1={trust_f1:.4f}  learned_f1={learned_f1:.4f}  "
-                    f"ΔF1={d_f1:+.4f}  trust_lat={trust_lat:.2f}s  "
-                    f"learned_lat={learned_lat:.2f}s  Δlat={d_lat:+.2f}s"
-                )
-        else:
-            print("  Deferral policy columns not both present; skipping delta table.")
-
-        # Save ablation tables
-        ablation_path = f"{results_dir}{_run_tag}_ablation_f1.csv"
-        f1_pivot.round(4).to_csv(ablation_path)
-        print(f"\nAblation F1 saved to {ablation_path}")
-        lat_pivot.round(2).to_csv(f"{results_dir}{_run_tag}_ablation_latency.csv")
-
-        # --- Embedding model ablation pivot ---
-        if "embedding_short" in summary_df.columns:
-            emb_agg = summary_df[summary_df["ablation"] != "no_opt"].groupby(
-                ["query", "ablation", "embedding_short"]
-            ).agg(f1_mean=("f1", "mean"), latency_mean=("duration_s", "mean")).reset_index()
-            emb_f1_pivot = emb_agg.pivot_table(
-                index=["query", "ablation"],
-                columns="embedding_short",
-                values="f1_mean",
-                aggfunc="mean",
-            )
-            emb_lat_pivot = emb_agg.pivot_table(
-                index=["query", "ablation"],
-                columns="embedding_short",
-                values="latency_mean",
-                aggfunc="mean",
-            )
-            print("\n--- Embedding Model Ablation: F1 (mean over budgets × k) ---")
-            print(emb_f1_pivot.round(4).to_string())
-            emb_f1_pivot.round(4).to_csv(f"{results_dir}{_run_tag}_emb_ablation_f1.csv")
-            emb_lat_pivot.round(2).to_csv(f"{results_dir}{_run_tag}_emb_ablation_latency.csv")
-            print(f"Embedding ablation tables saved to {results_dir}{_run_tag}_emb_ablation_*.csv")
-
-        # --- Plot ablation bar chart ---
-        try:
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-            query_labels = [q for q in f1_pivot.index if q != "AVERAGE"]
-            config_labels = list(f1_pivot.columns)
-            x = np.arange(len(query_labels))
-            width = max(0.15, 0.8 / max(len(config_labels), 1))
-
-            colors = {
-                "activeSampling+refine": "#2a9d8f",
-                "activeSampling+refine+trust_proxy": "#2a9d8f",
-                "activeSampling+refine+learned_deferral": "#e76f51",
-                "activeSampling+lr_only": "#264653",
-                "random+refine": "#e9c46a",
-                "random+lr_only": "#e76f51",
-            }
-
-            # F1 bar chart
-            ax1 = axes[0]
-            _center_offset = width * (len(config_labels) - 1) / 2
-            for i, cfg_name in enumerate(config_labels):
-                vals = [f1_pivot.loc[q, cfg_name] if pd.notna(f1_pivot.loc[q, cfg_name]) else 0 for q in query_labels]
-                ax1.bar(x + i * width, vals, width, label=cfg_name, color=colors.get(cfg_name, "#adb5bd"))
-            ax1.set_xticks(x + _center_offset)
-            ax1.set_xticklabels(query_labels, rotation=45, ha="right", fontsize=8)
-            ax1.set_ylabel("F1 (mean)")
-            ax1.set_title("Ablation: F1 by Query")
-            ax1.legend(fontsize=7)
-            ax1.set_ylim(0, 1.05)
-
-            # Latency bar chart
-            ax2 = axes[1]
-            for i, cfg_name in enumerate(config_labels):
-                vals = [lat_pivot.loc[q, cfg_name] if pd.notna(lat_pivot.loc[q, cfg_name]) else 0 for q in query_labels]
-                ax2.bar(x + i * width, vals, width, label=cfg_name, color=colors.get(cfg_name, "#adb5bd"))
-            ax2.set_xticks(x + _center_offset)
-            ax2.set_xticklabels(query_labels, rotation=45, ha="right", fontsize=8)
-            ax2.set_ylabel("Latency (s, mean)")
-            ax2.set_title("Ablation: Latency by Query")
-            ax2.legend(fontsize=7)
-
-            plt.tight_layout()
-            plot_path = f"{results_dir}{_run_tag}_ablation_study.png"
-            fig.savefig(plot_path, dpi=150, bbox_inches="tight")
-            plt.close(fig)
-            print(f"Ablation plot saved to {plot_path}")
-        except Exception as e:
-            print(f"Plot failed (non-fatal): {e}")
 
     if spark:
         spark.stop()

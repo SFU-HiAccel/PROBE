@@ -22,11 +22,15 @@ def test_repr_mode_validation(monkeypatch):
     assert pm._repr_mode() == "ce"
 
 
-def test_reduce_rows_is_unit_norm_and_capped():
+def test_reduce_rows_matches_pca_of_normalized_hidden_states():
+    from sklearn.decomposition import PCA
     x = np.random.default_rng(0).normal(size=(40, 20))
     y = pm._reduce_rows(x, rank=8)
     assert y.shape == (40, 8)
-    np.testing.assert_allclose(np.linalg.norm(y, axis=1), 1, atol=1e-5)
+    normalized = x.astype(np.float32)
+    normalized /= np.linalg.norm(normalized, axis=1, keepdims=True)
+    expected = PCA(n_components=8, random_state=0).fit_transform(normalized)
+    np.testing.assert_allclose(y, expected, atol=1e-6)
     assert pm._reduce_rows(x[:4], rank=8).shape == (4, 3)   # at most n - 1 components
 
 
@@ -131,9 +135,9 @@ def test_repr_mode_routes_axis_and_features(spark, monkeypatch, kind, mode):
 
 
 def SamplingConfig(**kwargs):
-    # These tests exercise saved legacy hard-budget contracts explicitly.
-    kwargs.setdefault("protocol", "legacy")
+    # Explicit small batches exercise the paper hard-budget contract.
+    kwargs.setdefault("protocol", "paper")
     kwargs.setdefault("pilot_fraction", .1)
-    kwargs.setdefault("pilot_mode", "hybrid")
+    kwargs.setdefault("pilot_mode", "uniform")
     kwargs.setdefault("n_min", 1)
     return _SamplingConfig(**kwargs)

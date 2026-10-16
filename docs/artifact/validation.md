@@ -1,4 +1,43 @@
-# Validation record
+# Validation — 2026-10-16
+
+The current release passed **403 tests**, including numerical algorithms, Spark
+operators, annotation exports, paired statistics and figure/table generation.
+The dry-run contains **2,116 unique configurations** across ten experiment families.
+See [release_20261016.json](validation/release_20261016.json) for source hashes and evidence scope.
+
+A real Qwen3-VL-Reranker-2B and the existing Qwen3.8-27B-FP8 expert service
+completed public Spark filter/join smoke tests on four candidates each, with eight
+physical expert calls and zero failures. The same code completed LRO113 on its
+266-candidate universe, seed0, with L15/A11/D83 and zero failures. Its exported
+candidate arrays reproduced the measured F1 of1.0. The reporter accepted the raw
+record, and a second invocation with `--resume` reused the same run ID without new
+expert calls. This is integration evidence using Qwen3.8, not a reproduction of the
+paper's Gemma comparison or a controlled speedup measurement.
+
+Adversarial review used three external CLI reviewers. The resulting fixes cover
+sampler quotas, PCA/graph equations, frozen-label provenance, row-aligned ECE,
+full-population LOTUS sampling, GAM routing and strict iteration counts. Retired
+sampling/routing implementations and the unused JVM operators were removed.
+The final verification of the review fixes returned PASS with no remaining blockers.
+
+Animals Q1 now uses the manuscript's 1,600-row population and binary row F1.
+Its human annotations remain outside model execution. The local sf1600 file has
+116 annotated zebra rows, whereas the manuscript's rounded positive rate implies
+about98. Input hashes and measured prevalence are retained rather than replacing
+data or labels to obtain the published number. Ecomm Q8 also has a documented
+modality-table discrepancy. ECE settings are explicit where the manuscript leaves
+them unspecified.
+
+Full numerical reproduction still requires all measured grids and configured
+expert/proxy servers. No paper-wide result or confidence interval is inferred from
+these integration checks.
+
+---
+
+Everything below describes earlier source revisions. It is retained for provenance
+and is not validation of the October16 protocol.
+
+# Historical validation records
 
 Validation on 2026-10-08 used an isolated release worktree. Original dirty research files and the pre-existing Gemma server were preserved. Detailed machine-readable records are under `validation/`.
 

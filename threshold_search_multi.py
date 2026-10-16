@@ -165,7 +165,7 @@ def build_windows(w: np.ndarray, intervals: Sequence[Interval], seeds: Sequence[
 
 def allocate_batch(windows: Sequence[Interval], labelled_mask: np.ndarray, batch: int,
                    explore_frac: float, weights: Optional[Sequence[float]] = None,
-                   max_strata: int = 10, rng=None) -> Tuple[np.ndarray, int]:
+                   max_strata: int = 10, rng=None, uniform_remainder=False) -> Tuple[np.ndarray, int]:
     """Rows to label next: weighted shares over the windows, plus exploration outside them.
 
     Returns (rows, n_explore). Exploration draws equally from geometric strata (from the match end)
@@ -205,7 +205,9 @@ def allocate_batch(windows: Sequence[Interval], labelled_mask: np.ndarray, batch
     for i, k in enumerate(share.tolist()):
         if k > 0:
             picks.append(rng.choice(cands[i], size=k, replace=False))
-    if n_explore > 0:
+    if n_explore > 0 and uniform_remainder:
+        picks.append(rng.choice(outside, size=n_explore, replace=False))
+    elif n_explore > 0:
         strata = geometric_strata(outside, max_strata=max(1, min(max_strata, n_explore)))
         sizes = np.array([s_.size for s_ in strata], dtype=np.int64)
         counts = allocate_cumulative(sizes, np.zeros_like(sizes), n_explore)

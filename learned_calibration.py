@@ -136,7 +136,7 @@ class LearnedCalibrationConfig:
     @property
     def sample_budget(self) -> int:
         if self.protocol == "paper":
-            return (4 * self.total_budget) // 5
+            return (3 * self.total_budget) // 5
         return min(self.total_budget, max(1, int(self.sample_frac * self.total_budget)))
 
     @property
@@ -191,9 +191,9 @@ def learned_calibration_total_budget(n_items: int, budget_pct: float) -> int:
 def paper_calibration_config(total_budget: int, **overrides) -> LearnedCalibrationConfig:
     """Current paper protocol; historical configurations remain explicitly constructible."""
     settings = dict(total_budget=total_budget, protocol="paper", budget_scope="preparation",
-                    sample_frac=.8, calib_frac=.2, route_frac=0., route_unlimited=True,
+                    sample_frac=.6, calib_frac=.4, route_frac=0., route_unlimited=True,
                     fixed_calibration=True, calib_input="refined", alpha=.5, cp_lam=.15,
-                    rho_a=0., rho_b=0., rho_c=0., rho_delta=1., seed=0)
+                    rho_a=0., rho_b=0., rho_c=0., rho_delta=0., seed=0)
     settings.update(overrides)
     return LearnedCalibrationConfig(**settings)
 
@@ -251,7 +251,7 @@ def run_learned_calibration(
 ) -> LearnedCalibrationResult:
     """Stages 2-5: sample A, calibrate on A+L, choose dual thresholds, verify D.
 
-    ``x`` (the LR proxy logit) always drives the stratified design of A. The calibrator reads ``x_cal``
+    Paper A is stratified on refined scores. Legacy A uses the LR proxy score. The calibrator reads ``x_cal``
     when given (e.g. the logit of the graph-refined score, calib_input="refined") and ``x`` otherwise;
     ``oof.x`` must be on the same scale as the calibrator input.
     """
@@ -303,8 +303,7 @@ def run_learned_calibration(
     if m > 0:
         # Without a proxy logit there is nothing to stratify on: one stratum (uniform rounds).
         scores = s if x is not None else np.zeros(n, dtype=np.float64)
-        max_strata = min(m, max(1, int(np.ceil(.2 * m)))) if config.protocol == "paper" else m
-        design = StratifiedDesign.build(pool, scores, n_bins=config.n_bins, max_strata=max_strata,
+        design = StratifiedDesign.build(pool, scores, n_bins=config.n_bins, max_strata=m,
                                         neyman=config.neyman and x is not None)
     while design is not None and m > 0:
         design, new_rows = design.draw(m, rng)
@@ -315,7 +314,7 @@ def run_learned_calibration(
         remaining -= new_rows.size
         verified[new_rows] = True
         y_known[new_rows] = new_y
-        if x is not None:
+        if x is not None and not (config.protocol == "paper" and np.all(verified)):
             _t0 = time.perf_counter()
             sample = design.sample()
             common = dict(
@@ -331,7 +330,8 @@ def run_learned_calibration(
                 fit = calibrate_gam(**common, ridge=config.gam_ridge, n_knots=config.gam_knots,
                                     univariate=config.calibrator == "gam_univariate")
             else:
-                fit = calibrate(**common, rho=config.rho, paper=config.protocol == "paper")
+                fit = calibrate(**common, rho=config.rho, paper=config.protocol == "paper",
+                                strata=np.repeat(np.arange(len(sample.sample_counts)), sample.sample_counts))
             reason = fit.reason
             t_fit += time.perf_counter() - _t0
             if fit.status != "insufficient_evidence":
@@ -389,7 +389,8 @@ def run_learned_calibration(
         counts = expected_counts(p, h[unverified], n_verified_pos=int(y_known[verified].sum()))
         # Order by the raw logit: p is monotone in x within each h group, and x does
         # not saturate the way sigmoid(x) does for |x| > ~37.
-        plan = plan_dual_threshold(unverified, p, xc[unverified], h[unverified], counts, budget_left,
+        routing_axis = p if hasattr(params, 'predict') else xc[unverified]
+        plan = plan_dual_threshold(unverified, p, routing_axis, h[unverified], counts, budget_left,
                                    alpha=config.alpha, n_pool=n,
                                    objective=config.route_objective, cost_exp=config.route_cost_exp)
         d_idx = plan.verify_idx

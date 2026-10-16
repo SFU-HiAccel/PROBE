@@ -5,7 +5,7 @@ budget (including retries) at the oracle transport shared by L/A/D. Audit bounds
 are fixed-time SRSWOR bounds for the supplied oracle, not human ground truth.
 """
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import ceil
 from typing import Callable, Hashable, MutableMapping
 
@@ -18,10 +18,9 @@ from threshold_search_multi import penalised_intervals, seed_rows, build_windows
 
 @dataclass(frozen=True)
 class SamplingConfig:
-    batch_size: int = 32
+    batch_size: int | None = None  # paper: max(1, floor(0.01 N)), resolved at execution
     pilot_fraction: float = .3
     pilot_mode: str = 'uniform'
-    pilot_mix: tuple = (.25, .25, .5)  # top, geometric, uniform audit
     p_star: float = .05
     delta_sel: float = .05
     mu: float = 1.5
@@ -32,52 +31,22 @@ class SamplingConfig:
     seed: int = 0
     policy: str = 'gated'  # explicit structural ablations: multi / stratified
     fair_seeds: bool = True
-    # 'legacy': hybrid-pilot protocol of the saved experiments. 'paper': Algorithms 1-2 of the
-    # paper (uniform pilot without batch minimum, one-sided gate, high-to-low scan before the first
-    # positive, geometric strata with minimum quota + pilot Neyman weights). See _paper_sas.
     protocol: str = 'paper'
 
     def __post_init__(self):
-        if self.batch_size < 1 or self.train_strata < 1 or self.k_max < 1 or self.n_min < 1:
+        if (self.batch_size is not None and self.batch_size < 1) or self.train_strata < 1 or self.k_max < 1 or self.n_min < 1:
             raise ValueError('batch_size, train_strata, k_max and n_min must be positive')
         if not (0 <= self.pilot_fraction <= 1 and 0 <= self.p_star <= 1
                 and 0 < self.delta_sel < 1 and 0 <= self.explore_fraction <= 1):
             raise ValueError('invalid probability/fraction')
-        if len(self.pilot_mix) != 3 or min(self.pilot_mix) < 0 or not np.isclose(sum(self.pilot_mix), 1):
-            raise ValueError('pilot_mix must be three nonnegative shares summing to one')
-        if self.pilot_mode not in ('hybrid', 'uniform', 'strata') or self.policy not in ('gated', 'multi', 'stratified'):
-            raise ValueError('unknown pilot mode or policy')
+        if self.pilot_mode != 'uniform' or self.policy not in ('gated','multi','stratified'):
+            raise ValueError('Only the uniform paper pilot is supported')
         if not np.isfinite(self.mu) or self.mu < 0:
             raise ValueError('mu must be nonnegative and finite')
-        if self.protocol not in ('legacy', 'paper'):
-            raise ValueError('protocol must be legacy or paper')
+        if self.protocol != 'paper':
+            raise ValueError('Only the paper sampling protocol is supported')
 
 
-def finite_population_interval(N, n, k, delta=.05):
-    """Invert both hypergeometric tails, allocating delta/2 to each tail.
-
-    Returns integer population-positive bounds. No sample => [0,N].
-    Binary searches exploit monotonicity in the unknown population count.
-    """
-    if not (0 <= k <= n <= N and 0 < delta < 1):
-        raise ValueError('invalid finite-population observation')
-    lo, hi = k, N - n + k
-    a, b = lo, hi
-    while a < b:
-        m = (a + b) // 2
-        if hypergeom.sf(k - 1, N, m, n) >= delta / 2:
-            b = m
-        else:
-            a = m + 1
-    lower = a
-    a, b = lo, hi
-    while a < b:
-        m = (a + b + 1) // 2
-        if hypergeom.cdf(k, N, m, n) >= delta / 2:
-            a = m
-        else:
-            b = m - 1
-    return lower, a
 
 
 @dataclass
@@ -124,6 +93,8 @@ def sample_fixed_ce(ids, scores, oracle: Callable[[Hashable], int], budget: int,
     if budget < 0 or int(budget) != budget:
         raise ValueError('budget must be a nonnegative integer')
     N = len(ids)
+    if cfg.batch_size is None:
+        cfg = replace(cfg, batch_size=max(1, N // 100))
     order = [ids[i] for i in np.argsort(-scores, kind='stable')]
     rank_by_id = {key: rank for rank, key in enumerate(order)}
     cache = {} if label_cache is None else label_cache
@@ -175,104 +146,8 @@ def sample_fixed_ce(ids, scores, oracle: Callable[[Hashable], int], budget: int,
         trace.append({'stage': stage, 'ids': acquired, 'attempts': len(attempted),
                       'positive_count': int((w > 0).sum())})
 
-    def stratified_order(strata):
-        queues = [deque(rng.permutation(s).tolist()) for s in strata]
-        out = []
-        while any(queues):
-            for q in queues:
-                if q:
-                    out.append(q.popleft())
-        return out
-
-    if cfg.protocol == 'paper':
-        _paper_sas(cfg, ids, order, rank_by_id, w, unavailable, cap, int(budget),
-                   attempted, buy, rng, audit_order, pilot, trace, cache)
-        labels = {i: cache[i] for i in ids if i in cache}
-        unresolved = [i for i in ids if i not in cache]
-        reason = 'pool_labelled' if not unresolved else 'budget_exhausted' if len(attempted) >= cap else 'oracle_failures'
-        return SamplingResult(order, labels, pilot, trace, attempted, failed, unresolved, reason)
-
-    if cfg.pilot_mode == 'uniform':
-        n_top, n_geo, n_audit = 0, 0, m0
-    elif cfg.pilot_mode == 'strata':
-        n_top, n_geo, n_audit = 0, m0, 0
-    else:
-        # Largest remainder gives an exact fixed quota even for tiny budgets.
-        raw = np.array(cfg.pilot_mix) * m0
-        shares = np.floor(raw).astype(int)
-        for i in np.argsort(-(raw - shares), kind='stable')[:m0 - shares.sum()]:
-            shares[i] += 1
-        n_top, n_geo, n_audit = shares.tolist()
-    # Audit first: the complete predeclared prefix always fits, even with overlap.
-    audit_rows = audit_order[:n_audit]
-    pilot.audit_ids = [order[int(r)] for r in audit_rows]
-    buy(audit_rows, 'pilot_audit')
-    buy(np.flatnonzero(~unavailable)[:n_top], 'pilot_top')
-    geo_order = stratified_order(geometric_strata(np.arange(N), cfg.train_strata))
-    buy([r for r in geo_order if not unavailable[r]][:n_geo], 'pilot_geo')
-    # Cache overlap can release quota; spend it without modifying the audit prefix.
-    buy([r for r in geo_order if not unavailable[r]][:max(0, m0-len(attempted))], 'pilot_fill')
-    pilot.sampled_ids = [i for i in attempted if i in cache]
-    pilot.positives = [i for i in pilot.sampled_ids if cache[i]]
-    if N and all(i in cache for i in pilot.audit_ids):
-        bounds = finite_population_interval(N, n_audit, sum(cache[i] for i in pilot.audit_ids), cfg.delta_sel)
-        pilot.interval = tuple(v / N for v in bounds)
-        if pilot.interval[1] <= cfg.p_star:
-            pilot.regime = 'highly_selective'
-        elif pilot.interval[0] > cfg.p_star:
-            pilot.regime = 'not_highly_selective'
-    pilot.mode = ('stratified' if pilot.regime == 'not_highly_selective' else 'multi') if cfg.policy == 'gated' else cfg.policy
-    # Fixed equal-rank strata; a pre-generated within-stratum permutation gives
-    # SRSWOR at every deterministic allocation size. No label-adaptive allocation.
-    strata_order = stratified_order(np.array_split(np.arange(N), min(N, cfg.train_strata))) if N else []
-    queue, served = deque(), set()
-    windows, r, exploration_credit, seed_credit = [], 0, 0., 0.
-    c = max(1., N) ** (1 / max(1, ceil((cap-m0) / cfg.batch_size)))
-    while len(attempted) < cap and (~unavailable).any():
-        q = min(cfg.batch_size, cap-len(attempted))
-        if pilot.mode == 'stratified':
-            rows = [p for p in strata_order if not unavailable[p]][:q]
-        else:
-            intervals = penalised_intervals(w, cfg.mu, cfg.k_max)
-            seeds = seed_rows(w, intervals)
-            active = {order[s] for s in seeds}
-            queue = deque(key for key in queue if key in active)
-            queued = set(queue)
-            for s in seeds:
-                key = order[s]
-                if key not in queued:
-                    queue.append(key)
-            r += 1
-            windows, weights = build_windows(w, intervals, seeds, windows, r, c)
-            mask = unavailable.copy()
-            rows = []
-            # Global uniform exploration can reach unseen clusters even when windows
-            # cover the whole axis. Fractional credit avoids round-to-zero starvation.
-            exploration_credit += cfg.explore_fraction*q
-            ne = min(q, int(exploration_credit), int((~mask).sum()))
-            exploration_credit -= ne
-            if ne:
-                chosen = rng.choice(np.flatnonzero(~mask), size=ne, replace=False)
-                rows.extend(chosen.tolist()); mask[chosen] = True
-            # Half of non-exploration capacity, with persistent remainder and FIFO
-            # service across original IDs. Finite budget need not serve every seed.
-            seed_credit += (q-ne) / 2 if queue and cfg.fair_seeds else 0
-            ns = min(q-len(rows), int(seed_credit)) if cfg.fair_seeds else 0
-            seed_credit -= ns
-            for _ in range(ns):
-                if not queue or not (~mask).any():
-                    break
-                key = queue.popleft(); queue.append(key)
-                s = rank_by_id[key]
-                free = np.flatnonzero(~mask)
-                p = int(free[np.argmin(np.abs(free-s))])
-                rows.append(p); mask[p] = True
-                served.add(key)
-            selected, _ = allocate_batch(windows, mask, q-len(rows), 0., weights, rng=rng)
-            rows.extend(selected.tolist())
-            trace.append({'stage': 'windows', 'intervals': intervals, 'seeds': seeds,
-                          'windows': windows, 'served_seed_ids': list(served)})
-        buy(rows, pilot.mode)
+    _paper_sas(cfg, ids, order, rank_by_id, w, unavailable, cap, int(budget),
+               attempted, buy, rng, audit_order, pilot, trace, cache)
     labels = {i: cache[i] for i in ids if i in cache}
     unresolved = [i for i in ids if i not in cache]
     reason = 'pool_labelled' if not unresolved else 'budget_exhausted' if len(attempted) >= cap else 'oracle_failures'
@@ -302,20 +177,6 @@ def paper_config(**overrides):
     return SamplingConfig(**settings)
 
 
-def one_sided_upper(N, n, k, delta=.05):
-    """Paper Eq. (1): K_upper = max{K : P_{Hyp(N,K,n)}[X <= k] > delta}. No sample => N."""
-    if not (0 <= k <= n <= N and 0 < delta < 1):
-        raise ValueError('invalid finite-population observation')
-    if n == 0:
-        return N
-    a, b = k, N - n + k          # cdf(k) is non-increasing in K, and equals 1 at K = k
-    while a < b:
-        m = (a + b + 1) // 2
-        if hypergeom.cdf(k, N, m, n) > delta:
-            a = m
-        else:
-            b = m - 1
-    return a
 
 
 def _stratum_quota(free_counts, weights, b, start):
@@ -363,7 +224,7 @@ def _paper_sas(cfg, ids, order, rank_by_id, w, unavailable, cap, budget,
     pilot.positives = [i for i in seen if cache[i]]
     # Lower-bound gate (Alg. 1, lines 8-10): leave the multi-interval branch only when the pilot
     # shows, at confidence 1 - delta_sel, that the positive rate exceeds p_star.
-    lower = one_sided_lower(N, n0, k0, cfg.delta_sel) / N if N else 0.
+    lower = one_sided_lower(N, n0, k0, cfg.delta_sel) / N if N and n0 == len(audit_rows) else 0.
     pilot.interval = (lower, 1.)
     pilot.regime = 'not_highly_selective' if lower > cfg.p_star else 'highly_selective'
     if cfg.policy == 'gated':
@@ -388,9 +249,7 @@ def _paper_sas(cfg, ids, order, rank_by_id, w, unavailable, cap, budget,
         weights = [len(s) * np.sqrt(p * (1 - p)) for s, p in zip(strata, p_hat)]
         batch_no = 0
         while len(attempted) < cap and (~unavailable).any():
-            for q in queues:
-                while q and unavailable[q[0]]:
-                    q.popleft()
+            queues = [deque(row for row in q if not unavailable[row]) for q in queues]
             b = min(cfg.batch_size, cap - len(attempted), int((~unavailable).sum()))
             take = _stratum_quota([len(q) for q in queues], weights, b, batch_no % max(1, len(queues)))
             rows = [queues[h].popleft() for h in range(len(queues)) for _ in range(int(take[h]))]
@@ -402,7 +261,7 @@ def _paper_sas(cfg, ids, order, rank_by_id, w, unavailable, cap, budget,
     # Multi-interval (Alg. 2): exploration share every batch; Explore (scan) phase until L holds n_min
     # positives, then the Exploit phase (intervals + seeds) with c fixed at its first batch.
     queue, served = deque(), set()
-    windows, r, q_e, seed_credit, c = [], 0, 0., 0., None
+    windows, r, q_e, c = [], 0, 0., None
     while len(attempted) < cap and (~unavailable).any():
         b = min(cfg.batch_size, cap - len(attempted))
         mask = unavailable.copy()
@@ -432,9 +291,7 @@ def _paper_sas(cfg, ids, order, rank_by_id, w, unavailable, cap, budget,
                     queue.append(order[s])
             r += 1
             windows, weights = build_windows(w, intervals, seeds, windows, r, c)
-            seed_credit += rest / 2 if queue and cfg.fair_seeds else 0
-            ns = min(rest, int(seed_credit)) if cfg.fair_seeds else 0
-            seed_credit -= ns
+            ns = rest // 2 if queue and cfg.fair_seeds else 0
             for _ in range(ns):
                 if not queue or not (~mask).any():
                     break
@@ -443,7 +300,8 @@ def _paper_sas(cfg, ids, order, rank_by_id, w, unavailable, cap, budget,
                 p = int(free[np.argmin(np.abs(free - rank_by_id[key]))])
                 rows.append(p); mask[p] = True
                 served.add(key)
-            selected, _ = allocate_batch(windows, mask, b - len(rows), 0., weights, rng=rng)
+            selected, _ = allocate_batch(windows, mask, b - len(rows), 0., weights, rng=rng,
+                                         uniform_remainder=True)
             rows.extend(selected.tolist())
             trace.append({'stage': 'windows', 'intervals': intervals, 'seeds': seeds,
                           'windows': windows, 'served_seed_ids': list(served), 'c': c})

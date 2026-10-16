@@ -118,14 +118,15 @@ def allocate_neyman(sizes: np.ndarray, counts: np.ndarray, m: int, p_hat: np.nda
     if m <= 0:
         return counts.copy()
 
-    n_floor = min(m, int(np.ceil(floor_frac * m)))
+    n_floor = min(m, max(int(np.count_nonzero((counts == 0) & (sizes > 0))),
+                         int(np.ceil(floor_frac * m))))
     target = allocate_cumulative(sizes, counts, n_floor)          # spread the floor evenly
     left = m - n_floor
     if left <= 0:
         return target
 
     room = sizes - target
-    sigma = np.sqrt(np.maximum(p * (1.0 - p), 1e-12))
+    sigma = np.sqrt(p * (1.0 - p))
     share = sizes.astype(np.float64) * sigma
     share = np.where(room > 0, share, 0.0)
     if share.sum() <= 0:                                          # no information to tilt on

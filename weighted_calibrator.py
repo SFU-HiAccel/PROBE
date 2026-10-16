@@ -96,7 +96,8 @@ def clopper_pearson_upper(k: int, n: int, alpha: float) -> float:
     return float(beta.ppf(1.0 - alpha, k + 1, n - k))
 
 
-def stratified_positive_target(y: np.ndarray, w: np.ndarray, *, lam: float, alpha: float) -> Tuple[float, Dict[str, Any]]:
+def stratified_positive_target(y: np.ndarray, w: np.ndarray, *, lam: float, alpha: float,
+                               strata: Optional[np.ndarray] = None) -> Tuple[float, Dict[str, Any]]:
     """Expected positives in the pool, mixing the measured rate with a Clopper-Pearson upper bound.
 
     Follows Kim et al. (arXiv:2606.08090 §5.2): ``(1-lam) * measured + lam * CP_upper`` per score range,
@@ -109,14 +110,17 @@ def stratified_positive_target(y: np.ndarray, w: np.ndarray, *, lam: float, alph
     w = np.asarray(w, dtype=np.float64).reshape(-1)
     if y.size == 0:
         return 0.0, {"cp_strata": 0}
-    uniq = np.unique(w)
+    groups = w if strata is None else np.asarray(strata).reshape(-1)
+    if groups.shape != y.shape:
+        raise ValueError("strata must align with calibration labels")
+    uniq = np.unique(groups)
     per_stratum_alpha = float(alpha) / max(1, uniq.size)
     measured = upper = 0.0
-    for wj in uniq:
-        rows = w == wj
+    for group in uniq:
+        rows = groups == group
         n_j = int(rows.sum())
         k_j = int(y[rows].sum())
-        size_j = float(wj) * n_j                      # N_j = (N_j / n_j) * n_j
+        size_j = float(w[rows].sum())
         measured += size_j * (k_j / n_j)
         upper += size_j * clopper_pearson_upper(k_j, n_j, per_stratum_alpha)
     target = (1.0 - lam) * measured + lam * upper
@@ -190,6 +194,73 @@ def _evidence_problem(y_a: np.ndarray, h_a: np.ndarray, h_pool: np.ndarray,
     return ""
 
 
+def _calibrate_paper(x_a, y_a, w_a, x_l, y_l, *, cp_lam, cp_alpha, strata):
+    """Section 5: shared slope, independent A/L intercepts, no ridge penalty.
+
+    A contributes hard labels with weights omega/mean(omega). Only L uses
+    Platt targets, computed from L's own class counts. If A has no positives,
+    fit the slope on L alone and anchor the A intercept to the CP heuristic.
+    """
+    diag = {"n_a": int(y_a.size), **positive_weight_diagnostics(y_a, w_a)}
+    if not y_a.size:
+        return CalibrationFit(None, "insufficient_evidence", "empty_calibration_sample", diag)
+    if not (x_a.shape == y_a.shape == w_a.shape) or not np.all(w_a > 0):
+        raise ValueError("calibration arrays must align and weights must be positive")
+    use_l = x_l is not None and y_l is not None and np.asarray(y_l).size > 0
+    xl = np.asarray(x_l, dtype=float).reshape(-1) if use_l else np.empty(0)
+    yl = np.asarray(y_l, dtype=float).reshape(-1) if use_l else np.empty(0)
+    if xl.shape != yl.shape or not all(np.all(np.isfinite(v)) for v in (x_a, y_a, w_a, xl, yl)):
+        raise ValueError("calibration inputs must be finite and aligned")
+    if not all(np.all((v == 0) | (v == 1)) for v in (y_a, yl)):
+        raise ValueError("calibration labels must be binary")
+    cp = bool(not y_a.any() and cp_lam > 0 and use_l and np.unique(yl).size == 2)
+    if np.unique(y_a).size < 2 and not cp:
+        return CalibrationFit(None, "insufficient_evidence", "single_class_in_A", diag)
+    npos = int(yl.sum())
+    target_l = np.where(yl > .5, (npos + 1.) / (npos + 2.), 1. / (len(yl) - npos + 2.))
+    wa = w_a / w_a.mean()
+    scale = len(yl) if cp else len(y_a) + len(yl)
+
+    def objective(theta):
+        a, c, cl = theta
+        loss, grad = 0., np.zeros(3)
+        if not cp:
+            z = a * x_a + c
+            residual = wa * (expit(z) - y_a)
+            loss += float(np.dot(wa, stable_bce(z, y_a)))
+            grad[:2] += [np.dot(residual, x_a), residual.sum()]
+        if use_l:
+            z = a * xl + cl
+            residual = expit(z) - target_l
+            loss += float(stable_bce(z, target_l).sum())
+            grad += [np.dot(residual, xl), 0., residual.sum()]
+        return loss / scale, grad / scale
+
+    result = minimize(objective, [1., 0., 0.], jac=True, method="L-BFGS-B",
+                      bounds=[(0., None), (0., 0.) if cp else (None, None),
+                              (None, None) if use_l else (0., 0.)],
+                      options={"ftol": 1e-13, "gtol": 1e-9, "maxiter": 1000})
+    diag.update(n_l=len(yl), lambda_used=(len(yl) / scale),
+                solver_success=bool(result.success), solver_message=str(result.message),
+                loss="sum_A omega/mean(omega) BCE(hard) + sum_L BCE(Platt_L)")
+    if not result.success or not np.all(np.isfinite(result.x)):
+        return CalibrationFit(None, "solver_failed", "lbfgsb_failed", diag)
+    a, c, cl = map(float, result.x)
+    target = float(np.dot(w_a, y_a))
+    if cp:
+        target, cp_diag = stratified_positive_target(y_a, w_a, lam=cp_lam, alpha=cp_alpha, strata=strata)
+        diag.update(cp_diag, cp_target_pos=target, cp_used=True)
+    try:
+        # Enforce Eq. anchor to numerical precision. This is the first-order
+        # condition for the independent A intercept, not an extra fitting loss.
+        c = fit_intercept_shift(a * x_a, y_a, w_a, target=target)
+    except (RuntimeError, ValueError) as exc:
+        return CalibrationFit(None, "solver_failed", f"intercept_fit_failed: {exc}", diag)
+    diag["intercept_residual"] = float(np.dot(w_a, expit(a * x_a + c)) - target)
+    params = PlattParams(a=a, b=c, c=0., delta=cl-c if use_l else 0., t=0.)
+    return CalibrationFit(params, "ok", "cp_conservative" if cp else "", diag)
+
+
 def calibrate(
     *,
     x_a: np.ndarray,
@@ -205,17 +276,14 @@ def calibrate(
     cp_lam: float = 0.0,
     cp_alpha: float = 0.05,
     paper: bool = False,
+    strata: Optional[np.ndarray] = None,
 ) -> CalibrationFit:
     """Fit the A+L weighted Platt model, then the A-only intercept shift."""
     x_a, h_a, y_a, w_a = (np.asarray(v, dtype=np.float64).reshape(-1) for v in (x_a, h_a, y_a, w_a))
     h_pool = np.asarray(h_pool, dtype=np.float64).reshape(-1)
     if paper:
-        # Eq. (platt): only slope/intercept and the L-only offset xi.
-        # Keep the historical parameter container with c fixed exactly to zero.
-        h_a = np.zeros_like(h_a)
-        h_pool = np.zeros_like(h_pool)
-        h_l = None if h_l is None else np.zeros_like(np.asarray(h_l, dtype=np.float64))
-        rho = (0., 0., 0., 1.)
+        return _calibrate_paper(x_a, y_a, w_a, x_l, y_l,
+                                cp_lam=cp_lam, cp_alpha=cp_alpha, strata=strata)
     diagnostics: Dict[str, Any] = {"n_a": int(y_a.size), **positive_weight_diagnostics(y_a, w_a)}
     h_l_fit = h_l if _l_enters_fit(x_l, h_l, y_l, lam) else None
     problem = _evidence_problem(y_a, h_a, h_pool, h_l_fit)
@@ -239,23 +307,13 @@ def calibrate(
     diagnostics["lambda_used"] = lam_used
     diagnostics["n_l"] = 0 if l_rows is None else int(l_rows[2].size)
 
-    smooth_population = y_a if l_rows is None else np.concatenate([y_a, l_rows[2]])
-    def smooth(y):
-        n_pos = int(np.count_nonzero(smooth_population > .5))
-        n_neg = smooth_population.size - n_pos
-        return np.where(y > .5, (n_pos + 1.) / (n_pos + 2.), 1. / (n_neg + 2.))
-
-    fit_y_a = smooth(y_a) if paper else y_a
-    fit_l_rows = l_rows
-    if paper and l_rows is not None:
-        fit_l_rows = (l_rows[0], l_rows[1], smooth(l_rows[2]))
     result = minimize(
         _objective,
         x0=np.array([1.0, 0.0, 0.0, 0.0]),
-        args=((x_a, h_a, fit_y_a, w_a), fit_l_rows, lam_used, rho),
+        args=((x_a, h_a, y_a, w_a), l_rows, lam_used, rho),
         jac=True,
         method="L-BFGS-B",
-        bounds=[(0.0, None), (None, None), (0., 0.) if paper else (None, None), (None, None)],
+        bounds=[(0.0, None), (None, None), (None, None), (None, None)],
     )
     diagnostics["solver_success"] = bool(result.success)
     diagnostics["solver_message"] = str(result.message)

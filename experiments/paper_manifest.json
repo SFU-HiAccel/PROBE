@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "paper_revision": "c5b2d862939ef4e8ee5b90be9fee9540602a4268",
+  "paper_revision": "67f02b52f416288f9a450aa73ad72b091e25d9de",
   "protocol": {
     "identity": "paper",
     "sampling": {
       "protocol": "paper",
       "backend": "fixed_ce",
-      "batch_size": 32,
+      "batch_size": "max(1, floor(0.01*N))",
       "pilot_mode": "uniform",
       "pilot_fraction": 0.3,
       "n_min": 2,
@@ -20,11 +20,11 @@
     "representation": {
       "model": "Qwen/Qwen3-VL-Reranker-2B",
       "revision": "4bd860ac4f15ad1897a214615cccc700f8f71818",
-      "features": "same-pass last-token hidden state; L2 -> PCA256 -> L2"
+      "features": "same-pass last-token hidden state; L2 -> PCA256 for LR; separate L2 for graph"
     },
     "budget": {
       "scope": "preparation",
-      "L": "floor(4*B/5)",
+      "L": "floor(3*B/5)",
       "A": "B-L",
       "D": "uncapped",
       "S3": "uncapped remaining unique IDs"
@@ -44,24 +44,32 @@
     },
     "calibration": {
       "input": "refined_score_logit",
-      "strata": "equal-width refined score",
+      "strata": "up to 10 equal-width refined-score bins, adjacent merges until H<=m",
       "floor_share": 0.2,
       "folds": "min(5,n_pos,n_neg)",
-      "model": "univariate Platt + L-only offset",
-      "zeta": 0.25,
-      "ridge": "0.5 xi^2 only",
-      "targets": "Platt-smoothed using pooled A and L class counts",
+      "model": "shared nonnegative slope, independent A/L intercepts",
+      "ridge": "none",
+      "targets": "hard A labels, Platt-smoothed L labels using L class counts",
       "anchor": "A-only inverse inclusion weighted",
       "cp_mixture": 0.15,
       "cp_alpha": 0.05,
-      "cp_status": "regularization heuristic"
+      "cp_status": "regularization heuristic",
+      "loss": "sum_A omega/mean(omega) BCE + sum_L BCE",
+      "floor": "max(H, ceil(0.2*m))"
     },
     "routing": {
       "alpha": 0.5,
       "objective": "alpha*(1-estimated F1)+(1-alpha)*delegation",
       "search": "dual prefixes + Dinkelbach"
     },
-    "ablation_single_class": "constant"
+    "ablation_single_class": "constant",
+    "revision": "2026-10-16",
+    "lotus": {
+      "filter": "Qwen3-VL-2B token log-probability",
+      "join": "E5/CLIP left-right cosine similarity",
+      "sample_fraction": 0.1,
+      "failure_probability": 0.1
+    }
   },
   "workloads": {
     "mmqa_q2a": {
@@ -69,100 +77,143 @@
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_MMQA_SF": "800"
-      }
+      },
+      "operator": "join",
+      "modality": "text+image"
     },
     "mmqa_q7": {
       "N": 230400,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_MMQA_SF": "200"
-      }
+      },
+      "operator": "join",
+      "modality": "text+image"
     },
     "ecomm_q7": {
       "N": 525625,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_ECOMM_SF": "250"
-      }
+      },
+      "operator": "join",
+      "modality": "text"
     },
     "ecomm_q8": {
       "N": 115768,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_ECOMM_SF": "250"
-      }
+      },
+      "operator": "join",
+      "modality": "text+image"
     },
     "ecomm_q9": {
       "N": 25440,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_ECOMM_SF": "250"
-      }
+      },
+      "operator": "join",
+      "modality": "text+image"
     },
     "ecomm_q13": {
       "N": 3992,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_ECOMM_SF": "250"
-      }
+      },
+      "operator": "filter",
+      "modality": "text+image"
     },
     "cars_q3": {
       "N": 10070,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_CARS_SF": "157376"
-      }
+      },
+      "operator": "filter",
+      "modality": "text+image"
     },
     "cars_q4": {
       "N": 157269,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_CARS_SF": "157376"
-      }
+      },
+      "operator": "filter",
+      "modality": "text"
     },
     "cars_q8": {
       "N": 30130,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_CARS_SF": "157376"
-      }
+      },
+      "operator": "filter",
+      "modality": "text+image"
     },
     "animals_q1": {
       "N": 1600,
-      "metric": "sembench_aggregate_query_f1; retain count error and predicted count separately",
-      "environment": {}
+      "metric": "human_annotated_binary_row_f1",
+      "environment": {
+        "LASO_ANIMALS_SF": "1600"
+      },
+      "operator": "filter",
+      "modality": "text+image"
     },
     "match113": {
       "N": 266,
       "metric": "sembench_query_scorer_f1_against_human_GT",
-      "environment": {}
+      "environment": {},
+      "operator": "join",
+      "modality": "text"
     },
     "match121": {
       "N": 1426,
       "metric": "sembench_query_scorer_f1_against_human_GT",
-      "environment": {}
+      "environment": {},
+      "operator": "join",
+      "modality": "text"
     },
     "match202": {
       "N": 384,
       "metric": "sembench_query_scorer_f1_against_human_GT",
-      "environment": {}
+      "environment": {},
+      "operator": "join",
+      "modality": "text"
     },
     "match305": {
       "N": 1421,
       "metric": "sembench_query_scorer_f1_against_human_GT",
-      "environment": {}
+      "environment": {},
+      "operator": "join",
+      "modality": "text"
     },
     "ecomm_q6": {
       "N": 9280,
       "metric": "sembench_query_scorer_f1_against_human_GT",
       "environment": {
         "LASO_ECOMM_SF": "4000"
-      }
+      },
+      "operator": "join",
+      "modality": "text+image"
     },
     "movie_q5": {
       "N": 65024,
       "metric": "sembench_semantic_set_f1_against_human_GT",
-      "environment": {}
+      "environment": {},
+      "operator": "join",
+      "modality": "text"
+    },
+    "cars_q7": {
+      "N": 30130,
+      "metric": "sembench_image_only_dented_car_id_f1_against_human_GT",
+      "environment": {
+        "LASO_CARS_SF": "157376"
+      },
+      "operator": "filter",
+      "modality": "text+image"
     }
   },
   "experiments": {
@@ -227,11 +278,13 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/main.pdf"
+        "results/figures/fig_sys_quality.pdf",
+        "results/figures/fig_sys_speedup.pdf",
+        "results/figures/bootstrap.json"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "sweep": {
       "labels": [
@@ -310,11 +363,13 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/sweep.pdf"
+        "results/figures/all_queries.pdf",
+        "results/figures/best_points.csv",
+        "results/figures/best_points.tex"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "sampling": {
       "labels": [
@@ -495,11 +550,11 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/sampling.pdf"
+        "results/figures/sampling_ablation.pdf"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "refinement": {
       "labels": [
@@ -600,11 +655,11 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/refinement.pdf"
+        "results/figures/graph_ablation.pdf"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "calibration": {
       "labels": [
@@ -777,11 +832,13 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/calibration.pdf"
+        "results/figures/alpha_tradeoff.pdf",
+        "results/figures/calibration_ece.csv",
+        "results/figures/calibration_ece_geomean.csv"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "representation": {
       "labels": [
@@ -838,11 +895,11 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/representation.pdf"
+        "results/figures/repr_models.pdf"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "experts": {
       "labels": [
@@ -901,11 +958,12 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/experts.pdf"
+        "results/figures/fig_mllm_quality.pdf",
+        "results/figures/fig_mllm_speedup.pdf"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "timing": {
       "labels": [
@@ -949,18 +1007,18 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/timing.pdf"
+        "results/figures/fig_time_breakdown.pdf"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "low_selectivity": {
       "labels": [
         "tab:lowsel-results"
       ],
       "queries": [
-        "cars_q4",
+        "cars_q7",
         "ecomm_q6",
         "movie_q5"
       ],
@@ -999,11 +1057,12 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/low_selectivity.pdf"
+        "results/figures/lowsel_results.csv",
+        "results/figures/lowsel_results.tex"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     },
     "trace": {
       "labels": [
@@ -1036,11 +1095,12 @@
       "aggregate": "experiments/report.py",
       "plot": "experiments/report.py",
       "outputs": [
-        "results/figures/trace.pdf"
+        "results/figures/encoder_rank.pdf",
+        "results/figures/sas_multi_process.pdf"
       ],
       "candidate_identity": "full paper universe, no blocking; reject run N != paper N",
       "timing": "measure end-to-end; no N/delegation scaling",
-      "statistic": "per-query values, explicit coverage; main F1 mean and Student-t 95% CI over exactly 5 seeds"
+      "statistic": "Query scorer means. Main uncertainty requires paired seed and class-stratified row bootstrap."
     }
   },
   "baseline_protocols": {
@@ -1114,7 +1174,7 @@
       ]
     },
     "default_probe_speedup_geomean": {
-      "paper_value": 4.88,
+      "paper_value": 4.87,
       "status": "unverified_raw_evidence",
       "query_coverage": [
         "mmqa_q2a",
@@ -1298,5 +1358,10 @@
     "enabled": false,
     "status": "historical_protocol_only"
   },
-  "raw_evidence_policy": "No workbook cells, simulated latency, mixed seeds or old-protocol runs admitted as current-paper raw evidence."
+  "raw_evidence_policy": "No workbook cells, simulated latency, mixed seeds or old-protocol runs admitted as current-paper raw evidence.",
+  "evaluation_notes": {
+    "animals_q1": "Paper row-level F1 on 1,600 physical images, replacing historical SemBench count-accuracy scorer",
+    "ecomm_q8": "Benchmark image-text join; manuscript modality table says text",
+    "ECE": "Ten equal-width bins, physical candidates outside L and A, human annotations. Manuscript does not specify these evaluation settings."
+  }
 }

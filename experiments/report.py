@@ -25,6 +25,10 @@ def load_runs(root, manifest):
             if not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest() != expected:
                 raise ValueError(f"Missing or modified raw output: {p}")
         row = run["row"]
+        if job['query'] not in manifest['workloads'] or job['paper_N'] != manifest['workloads'][job['query']]['N']:
+            raise ValueError(f'Workload does not match manifest: {path}')
+        if not run.get('sources') or not run.get('inputs', {}).get('sha256'):
+            raise ValueError(f'Missing execution/input identity: {path}')
         n = int(float(row["policy_total_rows"]))
         if n != job["paper_N"]:
             raise ValueError(f"Universe mismatch: {path}")
@@ -35,13 +39,43 @@ def load_runs(root, manifest):
             raise ValueError(f"Unresolved oracle failures: {path}")
         if not row.get("gt_source_sha256"):
             raise ValueError(f"Missing GT provenance: {path}")
+        shared = dict(sources=run['sources'], inputs=run['inputs']['sha256'],
+                      gt=row['gt_source_sha256'], model=job['model'], revision=job['model_revision'])
+        if job['experiment']!='representation':
+            shared.update(ce_revision=job['ce_revision'],representation=job['representation'],
+                          baseline_representation=job['baseline_representation'])
+        identity = dict(shared, ce_revision=job['ce_revision'], representation=job['representation'],
+                        baseline_representation=job['baseline_representation'], proxy=job['proxy'],
+                        external_sources=run.get('external_sources'), client_environment=run['client_environment'])
+        frozen = [path.parent / f for f in run['outputs'] if f.endswith('/frozen_acquisition.json')]
+        acquisition = json.loads(frozen[0].read_text())['labels_sha256'] if len(frozen)==1 else None
         records.append(dict(query=job["query"], system=job["system"], experiment=job["experiment"],
                             seed=job["seed"], point=json.dumps(job["point"], sort_keys=True),
                             model=job["model"], metric=job["metric"], N=n,
                             f1=quality, delegation=delegation, latency=latency,
+                            identity=identity, shared_identity=shared, acquisition=acquisition,
+                            raw_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                             raw_record=str(path.relative_to(root)),
                             expert_revision_status=run["expert_revision_status"]))
+    validate_pairing(records)
     return records
+
+
+def validate_pairing(records):
+    identities, acquisitions = {}, {}
+    for row in records:
+        point = json.loads(row['point'])
+        key = (row['experiment'], row['query'], point.get('expert'))
+        value = json.dumps(row['shared_identity'], sort_keys=True)
+        if key in identities and identities[key] != value:
+            raise ValueError(f'Incompatible source/data/expert/GT identities: {key}')
+        identities[key] = value
+        if row['experiment']=='refinement':
+            key = (row['query'],row['seed'],point['budget_pct'])
+            value = row['acquisition']
+            if not value or (key in acquisitions and acquisitions[key] != value):
+                raise ValueError(f'Refinement arms do not share acquired labels: {key}')
+            acquisitions[key] = value
 
 
 def aggregate(records, expected_seeds):
@@ -54,14 +88,15 @@ def aggregate(records, expected_seeds):
         seeds = [r["seed"] for r in rows]
         if len(seeds) != len(set(seeds)):
             raise ValueError(f"Duplicate seeds within a configuration: {key}")
+        if len({json.dumps(r.get('identity'),sort_keys=True) for r in rows}) != 1:
+            raise ValueError(f'Incompatible seed execution identities: {key}')
         expected = expected_seeds[key[0]]
         complete = set(seeds) == set(expected)
         values = [r["f1"] for r in rows]
         mean = statistics.mean(values)
-        # CI is only emitted for the prescribed five-run main quality groups.
+        # The paper resamples both seeds and positive/negative candidate rows.
+        # Five aggregate F1 values alone cannot recover that interval.
         ci = None
-        if key[0] == "main" and complete and len(values) == 5:
-            ci = 2.7764451051977987 * statistics.stdev(values) / math.sqrt(5)
         output.append(dict(zip(keys, key), seeds=sorted(seeds), expected_seeds=expected,
                            complete=complete, n_runs=len(rows), f1_mean=mean, f1_ci95_halfwidth=ci,
                            delegation_mean=statistics.mean(r["delegation"] for r in rows),
@@ -80,6 +115,8 @@ def main():
     p.add_argument("--input", type=Path, default=Path("results/paper"))
     p.add_argument("--output", type=Path, default=Path("results/figures"))
     p.add_argument("--plot-all", action="store_true")
+    p.add_argument("--plots", nargs="+", help="Selected experiment figures (requires complete selected grids)")
+    p.add_argument("--bootstrap", type=Path, help="Paired seed/class-stratified bootstrap report for main error bars")
     a = p.parse_args()
     manifest = json.loads((ROOT / "experiments/paper_manifest.json").read_text())
     records = load_runs(a.input, manifest)
@@ -116,23 +153,27 @@ def main():
                                   latency_geomean_s=geometric_mean([r["latency_mean_s"] for r in group]),
                                   status="complete seed/query coverage; expert revision and controlled timing need separate attestation")
     (a.output / "recomputed_claims.json").write_text(json.dumps(claims, indent=2) + "\n")
-    if a.plot_all:
+    if a.plot_all or a.plots:
+        selected = list(manifest['experiments']) if a.plot_all else a.plots
+        if set(selected) - set(manifest['experiments']):
+            p.error('Unknown experiment in --plots')
         # Refuse incomplete grids instead of silently omitting queries or inventing error bars.
-        missing = [k for k, v in coverage.items() if v["status"] == "partial"]
+        missing = [k for k, v in coverage.items() if k in selected and v["status"] == "partial"]
         if missing:
             p.error(f"Cannot plot the full paper: incomplete evidence for {missing}; see coverage.json")
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        for name in manifest["experiments"]:
-            rows = [r for r in aggregated if r["experiment"] == name]
-            fig, ax = plt.subplots(figsize=(10, 4))
-            for system in sorted({r["system"] for r in rows}):
-                arm = [r for r in rows if r["system"] == system]
-                ax.scatter([r["delegation_mean"] for r in arm], [r["f1_mean"] for r in arm], label=system)
-            ax.set(xlabel="Unique candidate delegation fraction", ylabel="Query scorer F1 against GT")
-            ax.legend(); fig.tight_layout()
-            fig.savefig(a.output / (name + "_quality_delegation_diagnostic.pdf")); plt.close(fig)
+        import sys
+        sys.path.insert(0, str(ROOT))
+        from experiments.paper_plots import render
+        bootstrap = json.loads(a.bootstrap.read_text()) if a.bootstrap else None
+        if bootstrap is not None:
+            from experiments.paper_statistics import validate_report
+            validate_report(bootstrap, records, manifest)
+        for name in selected:
+            try:
+                render(name, aggregated, manifest, a.output, input_root=a.input,
+                       records=records, bootstrap=bootstrap)
+            except ValueError as error:
+                p.error(str(error))
     print(json.dumps(dict(validated_runs=len(records), groups=len(aggregated),
         coverage={name:{k:v for k,v in entry.items() if k != 'missing_pairs'}
                   for name,entry in coverage.items()})))

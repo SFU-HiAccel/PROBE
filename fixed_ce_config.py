@@ -25,7 +25,7 @@ _RETIRED_SAMPLING_FIELDS = (
 def _reject_retired(keys):
     if keys:
         raise ValueError('Obsolete fixed-CE options: '+', '.join(sorted(keys))+
-                         '; remove them or explicitly select PROBE_SAMPLING_BACKEND=legacy')
+                         '; remove them and use the paper sampler')
 
 
 def runtime_options(seed=0, *, sampling_method='activeSampling', environ=None):
@@ -33,14 +33,8 @@ def runtime_options(seed=0, *, sampling_method='activeSampling', environ=None):
     if sampling_method != 'activeSampling':
         return {}
     backend = env.get('PROBE_SAMPLING_BACKEND', 'fixed_ce')
-    if backend not in ('fixed_ce', 'legacy'):
-        raise ValueError('PROBE_SAMPLING_BACKEND must be fixed_ce or legacy')
-    if backend == 'legacy':
-        return {'activeSampling_backend':'legacy',
-                'activeSampling_n_phases':int(env.get('LASO_N_PHASES','5')),
-                'activeSampling_vs_ratio':float(env.get('LASO_VS_RATIO','.5')),
-                'activeSampling_lr_blend_schedule':'linear',
-                'activeSampling_cold_start_phases':1}
+    if backend != 'fixed_ce':
+        raise ValueError('PROBE_SAMPLING_BACKEND must be fixed_ce; the legacy sampler was removed')
     _reject_retired([key for key in _RETIRED_AXIS_OPTIONS if env.get(key)])
     settings = json.loads(env.get('PROBE_SAMPLING_CONFIG','{}'))
     if not isinstance(settings, dict):

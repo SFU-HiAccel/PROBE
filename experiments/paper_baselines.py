@@ -73,7 +73,15 @@ def encode_contents(left, right, predicate, job, device):
         unique = np.concatenate(vectors)
         return unique[[lookup[(r.get('text') or '',r.get('image'))] for r in rows]]
     b = side(right)
-    features = b if left is None else (side(left)+b)/2
+    a = None if left is None else side(left)
+    if job['system'] == 'LOTUS' and a is not None:
+        # The join cascade orders candidate pairs by left/right embedding
+        # similarity. It never calls the filter's language-model helper.
+        similarity = np.einsum('ij,ij->i', a, b)
+        del model
+        return similarity[:, None], np.ones(1), dict(chosen, fusion='left/right cosine similarity',
+                                                    snapshot_revision=Path(snapshot).name)
+    features = b if a is None else (a+b)/2
     features /= np.maximum(np.linalg.norm(features,axis=1,keepdims=True),1e-12)
     query = encode([predicate if multimodal else 'query: '+predicate])[0]
     del model
@@ -152,9 +160,24 @@ def lotus_cascade(texts, oracle, proxy, *, target, seed, output):
     args=CascadeArgs(recall_target=target,precision_target=target,failure_probability=.1,
                      sampling_percentage=.1,cascade_IS_random_seed=seed)
     scores=calibrate_llm_logprobs(probabilities,args)
+    mask, metadata = _lotus_threshold_cascade(scores, oracle, args)
+    metadata.update(proxy_requests=len(probabilities), proxy_concurrency=concurrency, proxy=proxy,
+                    proxy_kind='filter_token_logprob')
+    return mask, metadata
+
+
+def _lotus_threshold_cascade(scores, oracle, args):
+    from third_party.lotus.cascade_utils import importance_sampling, learn_cascade_thresholds
+    scores = np.asarray(scores, dtype=float)
+    if not np.isfinite(scores).all() or np.any((scores < 0) | (scores > 1)):
+        raise ValueError('LOTUS scores must be finite probabilities')
+    # Upstream sqrt importance weights are undefined for an all-zero proxy.
+    if not len(scores) or scores.sum() == 0:
+        return oracle.label_ids(range(len(scores)),stage='fallback').astype(bool), dict(status='zero_proxy_full_oracle')
+    args.cascade_IS_max_sample_range = len(scores)
     sample,correction=importance_sampling(scores,args)
     if len(sample)==0:
-        return oracle.label_ids(range(len(texts)),stage='fallback').astype(bool),dict(status='empty_calibration_full_oracle')
+        return oracle.label_ids(range(len(scores)),stage='fallback').astype(bool),dict(status='empty_calibration_full_oracle')
     labels=oracle.label_ids(sample,stage='A').astype(bool)
     (high,low),_=learn_cascade_thresholds([scores[i] for i in sample],labels.tolist(),correction[sample],args)
     scores=np.asarray(scores)
@@ -163,9 +186,19 @@ def lotus_cascade(texts, oracle, proxy, *, target, seed, output):
     mask[routed]=oracle.label_ids(routed,stage='D').astype(bool)
     for i,y in oracle.ledger.cache.items():mask[i]=bool(y)
     return mask,dict(lower=float(low),upper=float(high),sample_ids=sample.tolist(),
-                     routed_ids=routed.tolist(),proxy_requests=len(probabilities),
-                     upstream_version='lotus-ai 1.1.3 vendored cascade helper',
-                     proxy_concurrency=concurrency,proxy=proxy)
+                     routed_ids=routed.tolist(),
+                     calibration_population=len(scores),
+                     upstream_version='lotus-ai 1.1.3 vendored cascade helper')
+
+
+def lotus_join_cascade(similarity, oracle, *, target, seed):
+    from third_party.lotus.cascade_utils import CascadeArgs, calibrate_sem_sim_join
+    args = CascadeArgs(recall_target=target, precision_target=target, failure_probability=.1,
+                       sampling_percentage=.1, cascade_IS_random_seed=seed)
+    scores = calibrate_sem_sim_join(np.asarray(similarity).reshape(-1).tolist())
+    mask, metadata = _lotus_threshold_cascade(scores, oracle, args)
+    metadata.update(proxy_kind='join_embedding_similarity', proxy_requests=0)
+    return mask, metadata
 
 
 def execute_baseline(job, features, query_embedding, texts, oracle, output):
@@ -188,7 +221,10 @@ def execute_baseline(job, features, query_embedding, texts, oracle, output):
         metadata=dict(sampler=trace,training_ids=ids.tolist(),training_budget=budget,
                       single_class_policy='constant prediction; no additional expert calls')
     elif system=='LOTUS':
-        mask,metadata=lotus_cascade(texts,oracle,job['proxy'],target=point.get('target',.9),seed=seed,output=output)
+        if job['operator'] == 'join':
+            mask,metadata=lotus_join_cascade(features[:, 0],oracle,target=point.get('target',.9),seed=seed)
+        else:
+            mask,metadata=lotus_cascade(texts,oracle,job['proxy'],target=point.get('target',.9),seed=seed,output=output)
     elif system=='ScaleDoc':
         from experiments.scaledoc_adapter import train_scores,cascade
         ids=np.random.default_rng(seed).choice(n,int(.05*n),replace=False)

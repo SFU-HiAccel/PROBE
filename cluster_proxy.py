@@ -33,7 +33,7 @@ logger = logging.getLogger("proxy_model")
 # re-uses the (slow) neighbour search across ablation cells that share the
 # same pair-embedding matrix.
 # ---------------------------------------------------------------------------
-_KNN_CACHE_VERSION = os.environ.get("LLMSQL_KNN_CACHE_VERSION", "v1")
+_KNN_CACHE_VERSION = "unit-gaussian-union-v2|" + os.environ.get("LLMSQL_KNN_CACHE_VERSION", "v1")
 _KNN_CACHE_ENABLED = os.environ.get(
     "LLMSQL_KNN_CACHE", "1"
 ).strip() not in ("0", "false", "False")
@@ -49,11 +49,7 @@ def _embeddings_fingerprint(embeddings: np.ndarray) -> str:
     h.update(b"|")
     h.update(str(embeddings.dtype).encode())
     h.update(b"|")
-    n = int(embeddings.shape[0]) if embeddings.ndim > 0 else 0
-    if n > 0:
-        idxs = sorted({0, n // 4, n // 2, (3 * n) // 4, n - 1})
-        for i in idxs:
-            h.update(np.ascontiguousarray(embeddings[i]).tobytes())
+    h.update(np.ascontiguousarray(embeddings).tobytes())
     return h.hexdigest()
 
 
@@ -286,8 +282,6 @@ def cluster_embeddings(
     return labels.astype(np.int32), centroids.astype(np.float32)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Phase D: Label Propagation (CutSSL-inspired)
 # ---------------------------------------------------------------------------
@@ -340,6 +334,11 @@ def _build_knn_graph(
     if k <= 0:
         sub_timings["nnz"] = 0
         return csr_matrix((n, n), dtype=np.float64)
+
+    # Section 4 constructs the graph on unit embeddings, including callers
+    # that provide raw features instead of the public PCA representation.
+    from sklearn.preprocessing import normalize
+    embeddings = normalize(np.asarray(embeddings, dtype=np.float64), norm="l2")
 
     # --- cache lookup ---------------------------------------------------
     cache_path: Optional[str] = None
@@ -407,8 +406,14 @@ def _build_knn_graph(
     sub_timings["nn_fit_time"] = float(fit_time)
     sub_timings["nn_query_time"] = float(query_time)
 
+    # Remove each row's own ID explicitly: with duplicate embeddings it need
+    # not be the first zero-distance neighbor returned by either backend.
+    neighbors = indices != np.arange(n)[:, None]
+    positions = np.argsort(~neighbors, axis=1, kind="stable")[:, :k]
+    nbr_idx = np.take_along_axis(indices, positions, axis=1)
+    nbr_dist = np.take_along_axis(distances, positions, axis=1)
     if sigma <= 0.0:
-        med = float(np.median(distances[:, -1]))
+        med = float(np.median(nbr_dist[:, -1]))
         sigma_used = med if med > 1e-10 else 1.0
     else:
         sigma_used = float(sigma)
@@ -417,8 +422,6 @@ def _build_knn_graph(
 
     # --- CSR build (vectorized; replaces ~N*k Python iterations) --------
     t0 = time.time()
-    nbr_idx = indices[:, 1:k + 1]
-    nbr_dist = distances[:, 1:k + 1]
     row_ind = np.repeat(np.arange(n, dtype=np.int64), k)
     col_ind = np.ascontiguousarray(nbr_idx, dtype=np.int64).ravel()
     d2 = np.square(np.ascontiguousarray(nbr_dist, dtype=np.float64).ravel())
@@ -428,7 +431,9 @@ def _build_knn_graph(
 
     # --- Symmetrize -----------------------------------------------------
     t0 = time.time()
-    W = (W + W.T) / 2.0
+    # Every edge in the union receives the same Gaussian weight, whether
+    # selected from one endpoint or both (Section 4, Graph Construction).
+    W = W.maximum(W.T)
     if not isinstance(W, csr_matrix):
         W = W.tocsr()
     sub_timings["symmetrize_time"] = time.time() - t0
@@ -1260,616 +1265,6 @@ def sample_kmeans_stratified(
 
 
 _ACTIVESAMPLING_MIN_LR_FIT = 20
-_ACTIVESAMPLING_LAMBDA_CAP = 1.0
-
-# Paper Alg. 4 (§5.2) trains the proxy-expert router with R-fold cross-fitting
-# so every labeled row both anchors the proxy and yields a router target
-# learned without its own label. An alternative 6:4 held-out split (reserve a
-# fixed router partition) is faster but is exactly the "reserve a fixed subset"
-# strategy §5.2 argues against, so it is disabled by default and the router
-# always uses the cross-fit (OOF) path. Set to True to restore the split.
-_ROUTER_USE_HELDOUT_SPLIT = False
-
-
-def _activeSampling_split_budget(total: int, k: int, mode: str) -> List[int]:
-    if k <= 1 or total <= 0:
-        return [max(0, int(total))]
-    k = int(k)
-    if mode == "front_heavy":
-        weights = np.array([0.5 ** i for i in range(k)], dtype=np.float64)
-    elif mode == "back_heavy":
-        weights = np.array([0.5 ** (k - 1 - i) for i in range(k)], dtype=np.float64)
-    else:
-        weights = np.ones(k, dtype=np.float64)
-    weights = weights / float(weights.sum())
-    raw = np.maximum(1, np.floor(weights * total).astype(np.int64))
-    deficit = int(total) - int(raw.sum())
-    if deficit > 0:
-        order = np.argsort(-weights)
-        for j in range(deficit):
-            raw[order[j % k]] += 1
-    elif deficit < 0:
-        surplus = -deficit
-        order = np.argsort(-weights)
-        idx = 0
-        while surplus > 0:
-            target = order[idx % k]
-            if raw[target] > 1:
-                raw[target] -= 1
-                surplus -= 1
-            idx += 1
-            if idx > 10 * k:
-                break
-    return [int(v) for v in raw.tolist()]
-
-
-def _activeSampling_blend_lambda(
-    phase_idx: int,
-    n_phases: int,
-    schedule: str,
-    n_lab: int,
-    cold_start_phases: int,
-) -> float:
-    if phase_idx < max(0, int(cold_start_phases)):
-        return 0.0
-    if schedule == "sim_only":
-        return 0.0
-    if schedule == "lr_only":
-        return _ACTIVESAMPLING_LAMBDA_CAP
-    if schedule == "step":
-        return _ACTIVESAMPLING_LAMBDA_CAP if phase_idx >= n_phases // 2 else 0.0
-    if schedule == "label_count":
-        return min(_ACTIVESAMPLING_LAMBDA_CAP, max(0.0, (n_lab - 30) / 200.0))
-    # "linear" (default) and any unrecognized schedule: paper Alg. 1's ramp
-    # lambda_t = (t-1)/(T-1), increasing linearly 0 -> 1 across the T rounds.
-    # phase_idx is 0-based, so the first non-cold round contributes
-    # proportionally and the final round reaches 1.0.
-    denom = max(1, n_phases - 1)
-    return min(_ACTIVESAMPLING_LAMBDA_CAP, phase_idx / denom)
-
-
-def _activeSampling_zscore(x: np.ndarray) -> np.ndarray:
-    mu = float(np.mean(x))
-    sd = float(np.std(x))
-    if sd < 1e-8:
-        return np.zeros_like(x, dtype=np.float64)
-    return ((x - mu) / sd).astype(np.float64)
-
-
-def _activeSampling_compute_phase_axis(
-    similarities: np.ndarray,
-    lr_score: Optional[np.ndarray],
-    lam: float,
-) -> np.ndarray:
-    if lr_score is None or lam <= 0.0:
-        return similarities.astype(np.float64)
-    z_sim = _activeSampling_zscore(similarities)
-    z_lr = _activeSampling_zscore(lr_score)
-    return ((1.0 - lam) * z_sim + lam * z_lr).astype(np.float64)
-
-
-def _activeSampling_inverse_permutation(order: np.ndarray) -> np.ndarray:
-    inv = np.empty_like(order)
-    inv[order] = np.arange(len(order), dtype=order.dtype)
-    return inv
-
-
-def _activeSampling_get_acc(w: np.ndarray) -> np.ndarray:
-    cumsum = np.insert(np.cumsum(w), 0, 0)
-    reverse_cumsum = np.insert(np.cumsum(w[::-1]), 0, 0)[::-1]
-    return cumsum - reverse_cumsum
-
-
-def _activeSampling_find_best_hyp(w: np.ndarray) -> int:
-    acc = _activeSampling_get_acc(w)
-    return int(np.argmax(acc))
-
-
-def _activeSampling_find_top_k_hyps(
-    w: np.ndarray, k: int, min_separation: int,
-) -> List[Tuple[int, float]]:
-    """Find up to k local maxima of the accuracy vector.
-
-    Returns a list of (position, score) sorted by score descending. Adjacent
-    plateaus are collapsed to their midpoint. Peaks are filtered to enforce
-    a minimum separation (in sorted-axis positions) so we don't pick K
-    near-duplicates of the same peak.
-
-    For multi-modal positive distributions, each local maximum corresponds
-    to a candidate label-transition zone — i.e. a separate boundary worth
-    querying around in the QA phase.
-    """
-    if k <= 1:
-        acc_single = _activeSampling_get_acc(w)
-        if len(acc_single) == 0:
-            return []
-        argmax_pos = int(np.argmax(acc_single))
-        return [(argmax_pos, float(acc_single[argmax_pos]))]
-
-    acc = _activeSampling_get_acc(w)
-    n = len(acc)
-    if n == 0:
-        return []
-
-    raw_peaks: List[Tuple[int, float]] = []
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and acc[j + 1] == acc[i]:
-            j += 1
-        left_ok = (i == 0) or (acc[i] > acc[i - 1])
-        right_ok = (j == n - 1) or (acc[j] > acc[j + 1])
-        if left_ok and right_ok:
-            raw_peaks.append(((i + j) // 2, float(acc[i])))
-        i = j + 1
-
-    if not raw_peaks:
-        return [(int(np.argmax(acc)), float(np.max(acc)))]
-
-    raw_peaks.sort(key=lambda p: -p[1])
-    selected: List[Tuple[int, float]] = []
-    for pos, score in raw_peaks:
-        if all(abs(pos - s_pos) >= min_separation for s_pos, _ in selected):
-            selected.append((pos, score))
-        if len(selected) >= k:
-            break
-    return selected
-
-
-
-def _activeSampling_compute_pos_weight(w: np.ndarray) -> float:
-    """Inverse-frequency weight for positive labels in the current w.
-
-    Returns ``N_neg_labeled / N_pos_labeled`` (clamped to >= 1.0). Used
-    to rebalance the k-interval DP's sum-of-w objective so net-positive
-    intervals can still form even when positives are heavily
-    outnumbered (e.g. animals_q1 has ~6% selectivity — a bi-modal
-    positive distribution where the minor mode has a 10:50 pos/neg
-    ratio is net-negative under unweighted accuracy and gets dropped
-    by the DP, so the secondary boundary is invisible).
-
-    Falls back to 1.0 (= no rebalancing) when no positive labels have
-    been collected yet, so the first VS round before any +1 has been
-    seen behaves as before.
-    """
-    n_pos = int(np.sum(w == 1.0))
-    n_neg = int(np.sum(w == -1.0))
-    if n_pos == 0:
-        return 1.0
-    return max(1.0, float(n_neg) / float(n_pos))
-
-
-def _activeSampling_kinterval_dp(
-    w: np.ndarray, k: int, pos_weight: float = 1.0,
-) -> Tuple[List[Tuple[int, int]], float]:
-    """Find up to k disjoint subarrays maximizing Σ w[i] over their union.
-
-    Solves the classical "maximum sum of at most k non-overlapping
-    subarrays" problem in O(N*k) time and memory. Returns the optimal
-    intervals as a list of (a, b) inclusive index pairs in increasing
-    order with b_m < a_{m+1}, plus the total sum achieved.
-
-    When w encodes labeled positions as {+1=positive, -1=negative, 0=unlabeled},
-    the optimal k-interval union approximates the best k-interval separator
-    of positives from negatives on the sorted-similarity axis. Unlabeled
-    positions contribute 0, neither helping nor hurting any interval.
-
-    ``pos_weight`` (>= 1.0) up-weights positive entries before the DP
-    runs — the standard inverse-frequency trick for class-imbalanced
-    data. With pos_weight = N_neg/N_pos, an interval needs only a
-    proportional share of positives to be net-positive in the DP
-    objective, so secondary positive modes that drown in negatives
-    under unweighted accuracy can still be detected. Default 1.0
-    keeps the original behavior.
-
-    Empty list returned when the best total is <= 0 (no interval beats the
-    "classify nothing as positive" baseline).
-    """
-    n = int(len(w))
-    if n == 0 or k <= 0:
-        return [], 0.0
-    k = min(k, n)
-    NEG_INF = -1e18
-
-    # f[i, j, s] = best sum using the first i elements, with exactly j
-    # intervals "used" (started or fully closed), in state s ∈ {0: outside,
-    # 1: inside the j-th interval, which must be non-empty).
-    f = np.full((n + 1, k + 1, 2), NEG_INF, dtype=np.float64)
-    f[0, 0, 0] = 0.0
-
-    if pos_weight != 1.0:
-        # Up-weight the +1 entries; negatives unchanged. Stays float64.
-        w64 = np.where(np.asarray(w) > 0,
-                       np.asarray(w, dtype=np.float64) * float(pos_weight),
-                       np.asarray(w, dtype=np.float64))
-    else:
-        w64 = np.asarray(w, dtype=np.float64)
-    for i in range(1, n + 1):
-        wi = float(w64[i - 1])
-        # state 0: element i is NOT in any interval. Two ways to arrive:
-        #   (a) previous position was outside   -> f[i-1, j, 0]
-        #   (b) previous position CLOSED the j-th interval -> f[i-1, j, 1]
-        f[i, :, 0] = np.maximum(f[i - 1, :, 0], f[i - 1, :, 1])
-        # state 1: element i IS in the j-th interval. Two ways to arrive:
-        #   (a) continuing: previous position was inside -> f[i-1, j, 1] + wi
-        #   (b) starting:   previous position was outside with j-1 intervals
-        #                   completed            -> f[i-1, j-1, 0] + wi
-        cont = f[i - 1, :, 1] + wi
-        start = np.full(k + 1, NEG_INF, dtype=np.float64)
-        start[1:] = f[i - 1, :-1, 0] + wi
-        f[i, :, 1] = np.maximum(cont, start)
-
-    # Best terminal state.
-    flat = f[n].reshape(-1)
-    idx = int(np.argmax(flat))
-    best = float(flat[idx])
-    best_j, best_s = divmod(idx, 2)
-    if best <= 0.0:
-        return [], 0.0
-
-    # Backtrack through the table to recover intervals.
-    intervals: List[Tuple[int, int]] = []
-    i = n
-    j = int(best_j)
-    s = int(best_s)
-    cur_right: Optional[int] = None
-    while i > 0:
-        wi = float(w64[i - 1])
-        if s == 1:
-            if cur_right is None:
-                cur_right = i - 1
-            # Did we arrive at (i, j, 1) by continuing or by starting?
-            cont_val = f[i - 1, j, 1] + wi
-            start_val = (f[i - 1, j - 1, 0] + wi) if j >= 1 else NEG_INF
-            if start_val >= cont_val:
-                # started here — [i-1, cur_right] is a complete interval
-                intervals.append((i - 1, cur_right))
-                cur_right = None
-                j -= 1
-                s = 0
-            else:
-                s = 1
-            i -= 1
-        else:
-            a = f[i - 1, j, 0]
-            b = f[i - 1, j, 1]
-            s = 0 if a >= b else 1
-            i -= 1
-
-    intervals.reverse()
-    return intervals, best
-
-
-def _activeSampling_kinterval_peaks(
-    intervals: List[Tuple[int, int]], w: np.ndarray,
-) -> List[Tuple[int, float]]:
-    """Interval endpoints as QA peak positions.
-
-    Returns (position, score) tuples for each endpoint, ready to feed into
-    the existing QA expansion loop. Score is the sum of w over a 1-unit
-    neighborhood inside the interval (proxy for "positive density near the
-    boundary"), so endpoints on strongly-positive intervals receive more
-    QA budget. Left and right endpoints of the same interval count as
-    separate peaks so both boundaries are refined.
-    """
-    peaks: List[Tuple[int, float]] = []
-    if not intervals:
-        return peaks
-    w64 = np.asarray(w, dtype=np.float64)
-    n = int(len(w64))
-    for (a, b) in intervals:
-        length = max(1, b - a + 1)
-        # Peak score ≈ sum of w inside the interval, normalized by length.
-        # Bounded above by 1 (pure positive interval), equals -1 for pure
-        # negative (which the DP wouldn't have picked anyway, so safe).
-        interval_score = float(np.sum(w64[a : b + 1])) / length
-        peaks.append((int(a), interval_score))
-        if b != a:
-            peaks.append((int(b), interval_score))
-    # Deduplicate positions (k=1 with a==b would otherwise produce a
-    # duplicate) while keeping insertion order.
-    seen: set = set()
-    out: List[Tuple[int, float]] = []
-    for pos, score in peaks:
-        if pos in seen:
-            continue
-        seen.add(pos)
-        if 0 <= pos < n:
-            out.append((pos, score))
-    return out
-
-
-def _activeSampling_auto_select_k(
-    w: np.ndarray, k_max: int, gain_tol: float, pos_weight: float = 1.0,
-) -> Tuple[int, List[Tuple[int, int]], float]:
-    """Elbow selection of k by relative-gain threshold.
-
-    Runs the k-interval DP for k in {1, ..., k_max}; picks the smallest k
-    whose marginal relative gain (acc_k - acc_{k-1}) / max(1, acc_{k-1})
-    is below `gain_tol`. Falls back to k_max if every k keeps adding
-    non-negligible accuracy. Returns (chosen_k, intervals_at_chosen_k,
-    acc_at_chosen_k).
-
-    ``pos_weight`` is forwarded to every internal DP call so the elbow
-    is computed against the same balanced objective the caller expects.
-    """
-    k_max = max(1, int(k_max))
-    prev_acc = 0.0
-    chosen_k = 1
-    chosen_intervals: List[Tuple[int, int]] = []
-    chosen_acc = 0.0
-    for k in range(1, k_max + 1):
-        intervals, acc = _activeSampling_kinterval_dp(w, k, pos_weight=pos_weight)
-        if k == 1:
-            chosen_k, chosen_intervals, chosen_acc = 1, intervals, acc
-            prev_acc = acc
-            continue
-        gain = acc - prev_acc
-        rel = gain / max(1.0, abs(prev_acc))
-        if rel < gain_tol:
-            # Not enough marginal gain — stop at previous k.
-            break
-        chosen_k, chosen_intervals, chosen_acc = k, intervals, acc
-        prev_acc = acc
-    return chosen_k, chosen_intervals, chosen_acc
-
-
-def _activeSampling_multi_interval_vs_reduction(
-    sorted_indices: np.ndarray,
-    texts: List[Union[str, list]],
-    label_fn: LabelFnType,
-    labeled_mask: np.ndarray,
-    w: np.ndarray,
-    windows: List[Tuple[int, int]],
-    B1: int,
-    B2: int,
-    k: int,
-    class_balance: bool = False,
-) -> Tuple[np.ndarray, np.ndarray, int, List[Tuple[int, int]]]:
-    spend = 0
-    n = int(len(w))
-
-    if B2 <= 0 or not windows:
-        return labeled_mask, w, spend, windows
-
-    budget = min(B1, B2)
-
-    # Index-based uniform sampling over the UNION of windows, excluding
-    # already-labeled positions. Equivalent to a uniform probability
-    # vector over the same support but skips the O(N) weighted-choice
-    # path — see _activeSampling_version_space_reduction for the rationale.
-    _t_choice = time.time()
-    window_mask = np.zeros(n, dtype=bool)
-    for (I, J) in windows:
-        if 0 <= I <= J < n:
-            window_mask[I : J + 1] = True
-    window_mask &= ~labeled_mask
-    candidate_positions = np.flatnonzero(window_mask)
-    n_available = candidate_positions.size
-    num_sample = min(budget, n_available)
-    if num_sample <= 0:
-        return labeled_mask, w, spend, windows
-    samp_positions = np.random.choice(
-        candidate_positions, size=num_sample, replace=False
-    )
-    _dt_choice = time.time() - _t_choice
-    query_global_indices = sorted_indices[samp_positions]
-
-    query_texts = [texts[gi] for gi in query_global_indices]
-    _t_llm = time.time()
-    query_labels = np.asarray(label_fn(query_texts), dtype=np.int32)
-    _dt_llm = time.time() - _t_llm
-    spend += num_sample
-    logger.info(
-        f"    [multi-VS round] N={n} k_windows={len(windows)} "
-        f"avail={n_available} sampled={num_sample} | "
-        f"choice={_dt_choice*1000:.1f}ms llm={_dt_llm:.2f}s"
-    )
-
-    labeled_mask[samp_positions] = True
-    w[samp_positions] = np.where(query_labels == 1, 1.0, -1.0)
-
-    # Re-run the DP to get updated optimal intervals. With
-    # class_balance, recompute pos_weight from the just-updated w so
-    # the rebalancing tracks the running pos/neg ratio as more labels
-    # come in (early rounds with few +1 labels degrade gracefully —
-    # _activeSampling_compute_pos_weight returns 1.0 when no positives yet).
-    pw = _activeSampling_compute_pos_weight(w) if class_balance else 1.0
-    intervals, _ = _activeSampling_kinterval_dp(w, k, pos_weight=pw)
-
-    # Shrink each window. If the DP returned fewer intervals than we have
-    # windows (e.g. some windows are purely negative so far), unmatched
-    # windows just keep their current extent and will be re-probed next
-    # round; this preserves exploration without collapsing too aggressively.
-    remaining_rounds = max(1, B2 // max(1, B1))
-    new_windows: List[Tuple[int, int]] = []
-    used_dp = [False] * len(intervals)
-    for (I, J) in windows:
-        if I >= J:
-            continue
-        # Match this window to its closest DP interval by midpoint distance,
-        # preferring unused DP intervals so we don't collapse two windows
-        # onto the same DP interval.
-        win_mid = (I + J) / 2.0
-        best_idx = -1
-        best_dist = float("inf")
-        for idx, (da, db) in enumerate(intervals):
-            if used_dp[idx]:
-                continue
-            if db < I or da > J:
-                # DP interval does not overlap this window at all; still
-                # allow matching but with a distance penalty.
-                dist = abs((da + db) / 2.0 - win_mid) + n
-            else:
-                dist = abs((da + db) / 2.0 - win_mid)
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = idx
-        if best_idx >= 0:
-            used_dp[best_idx] = True
-            dp_a, dp_b = intervals[best_idx]
-            dp_a = max(I, dp_a)
-            dp_b = min(J, dp_b)
-        else:
-            # No DP interval available — retain current window.
-            new_windows.append((I, J))
-            continue
-
-        cur_diam = int(np.count_nonzero(~labeled_mask[I : J + 1]))
-        if cur_diam <= 1:
-            new_windows.append((I, J))
-            continue
-        c2 = cur_diam ** (1.0 / remaining_rounds) if remaining_rounds > 1 else 1.0
-        target = max(1, math.ceil(cur_diam / c2))
-        diam = cur_diam
-        ni, nj = I, J
-        while diam > target and ni < nj:
-            # Trim from whichever side lies further from [dp_a, dp_b];
-            # fall back to accuracy-based tie-breaking (lower-acc side
-            # trimmed first) mirroring the 1-D algorithm.
-            left_dist = max(0, dp_a - ni)
-            right_dist = max(0, nj - dp_b)
-            if right_dist > left_dist:
-                if not labeled_mask[nj]:
-                    diam -= 1
-                nj -= 1
-            elif left_dist > right_dist:
-                if not labeled_mask[ni]:
-                    diam -= 1
-                ni += 1
-            else:
-                # Symmetric: trim from the side with the lower local
-                # accuracy under the current hypothesis; ties broken
-                # randomly (matches 1-D behavior).
-                if np.random.randint(0, 2) == 0:
-                    if not labeled_mask[ni]:
-                        diam -= 1
-                    ni += 1
-                else:
-                    if not labeled_mask[nj]:
-                        diam -= 1
-                    nj -= 1
-            if ni >= nj:
-                break
-        new_windows.append((ni, nj))
-
-    # Merge any windows that became adjacent or overlapping after shrinking,
-    # so the next round's uniform sampling doesn't double-count positions.
-    new_windows.sort()
-    merged: List[Tuple[int, int]] = []
-    for (I, J) in new_windows:
-        if merged and I <= merged[-1][1] + 1:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], J))
-        else:
-            merged.append((I, J))
-
-    sub_labeled, w, sub_spend, final_windows = _activeSampling_multi_interval_vs_reduction(
-        sorted_indices, texts, label_fn, labeled_mask, w,
-        merged, B1, B2 - budget, k, class_balance=class_balance,
-    )
-    return sub_labeled, w, spend + sub_spend, final_windows
-
-
-def _activeSampling_version_space_reduction(
-    sorted_indices: np.ndarray,
-    texts: List[Union[str, list]],
-    label_fn: LabelFnType,
-    labeled_mask: np.ndarray,
-    w: np.ndarray,
-    I: int,
-    J: int,
-    B1: int,
-    B2: int,
-) -> Tuple[np.ndarray, np.ndarray, int]:
-    """active-learning sampling version-space reduction."""
-    n = len(w)
-    spend = 0
-
-    if B2 <= 0 or I >= J:
-        return labeled_mask, w, spend
-
-    budget = min(B1, B2)
-
-    # Index-based uniform sampling over unlabeled positions in [I, J].
-    # Equivalent to building a probability vector lmbda[i] = 1/span on
-    # [I, J] and zeroing out labeled rows, then calling
-    # np.random.choice(n, ..., p=lmbda/total). The probability vector is
-    # uniform on its support, so we can skip building it: just enumerate
-    # the candidate indices and Fisher-Yates over them. ~50–200× faster
-    # for large N (numpy's weighted-without-replacement path is O(N) with
-    # a high constant; index-based is O(k) for k=B1).
-    _t_choice = time.time()
-    if I < 0:
-        I = 0
-    if J >= n:
-        J = n - 1
-    if I > J:
-        return labeled_mask, w, spend
-    window_mask = np.zeros(n, dtype=bool)
-    window_mask[I : J + 1] = True
-    window_mask &= ~labeled_mask
-    candidate_positions = np.flatnonzero(window_mask)
-    n_available = candidate_positions.size
-    num_sample = min(budget, n_available)
-    if num_sample <= 0:
-        return labeled_mask, w, spend
-    samp_positions = np.random.choice(
-        candidate_positions, size=num_sample, replace=False
-    )
-    _dt_choice = time.time() - _t_choice
-
-    query_global_indices = sorted_indices[samp_positions]
-    query_texts = [texts[gi] for gi in query_global_indices]
-    _t_llm = time.time()
-    query_labels = label_fn(query_texts)
-    _dt_llm = time.time() - _t_llm
-    spend += num_sample
-    logger.info(
-        f"    [VS round] N={n} I={I} J={J} span={J-I+1} "
-        f"avail={n_available} sampled={num_sample} | "
-        f"choice={_dt_choice*1000:.1f}ms llm={_dt_llm:.2f}s"
-    )
-
-    query_labels_arr = np.asarray(query_labels, dtype=np.int32)
-    labeled_mask[samp_positions] = True
-    w[samp_positions] = np.where(query_labels_arr == 1, 1.0, -1.0)
-
-    # --- Interval contraction (paper Alg. 2, lines 5-9) ---
-    # Geometric base is the RAW interval width (J - I); shrink factor
-    # c = (J - I)^(1/m) with m the remaining rounds, giving target width
-    # h = (J - I) / c. We then contract to the width-h sub-interval that
-    # minimizes the paper's max-endpoint threshold loss:
-    #     (I, J) <- argmin_{i,j in [I,J], j-i=h} max{ L(i), L(j) },
-    # where L(s) = |{matches <= s}| + |{non-matches > s}| is the empirical
-    # threshold loss. We recover L from the signed labels w via the exact
-    # affine identity L(s) = (sum|w| - acc(s)) / 2, where
-    # acc(s) = sum_{k<s} w_k - sum_{k>=s} w_k (so argmin L == argmax acc).
-    width = J - I
-    if width > 1:
-        # Paper Alg. 2: m = max(1, ceil(B_1 / B_batch)). Here B2 is the stage
-        # budget (paper B_1) and B1 the per-round batch (paper B_batch), so the
-        # remaining rounds use ceil division, not floor.
-        remaining_rounds = math.ceil(B2 / B1) if B1 > 0 else 1
-        if remaining_rounds <= 1:
-            c2 = float(width)
-        else:
-            c2 = float(width) ** (1.0 / remaining_rounds)
-        h = max(1, int(round(width / c2))) if c2 > 0 else 1
-        if h < width:
-            total_labeled = float(np.sum(np.abs(w)))
-            loss = (total_labeled - _activeSampling_get_acc(w)) / 2.0  # L(s), 0<=s<=n
-            # max{L(i), L(j)} over every width-h sub-interval [i, i+h] of [I, J]
-            left = loss[I : J - h + 1]
-            right = loss[I + h : J + 1]
-            best_off = int(np.argmin(np.maximum(left, right)))
-            I, J = I + best_off, I + best_off + h
-
-    sub_labeled, w, sub_spend = _activeSampling_version_space_reduction(
-        sorted_indices, texts, label_fn, labeled_mask, w,
-        I, J, B1, B2 - budget,
-    )
-    return sub_labeled, w, spend + sub_spend
-
 
 def sample_random_pure(
     embeddings: np.ndarray,
@@ -2173,503 +1568,6 @@ def sample_uqe_active(
     return labeled_indices, labeled_values, None, profiling
 
 
-def _run_activeSampling_single_phase(
-    sort_order: np.ndarray,
-    texts: List[Union[str, list]],
-    label_fn: LabelFnType,
-    labeled_mask: np.ndarray,
-    w: np.ndarray,
-    *,
-    B1: int,
-    vs_budget: int,
-    qa_budget: int,
-    use_multi_interval: bool,
-    vs_k: int,
-    effective_k: int,
-    n_modes: int,
-    k_auto: bool,
-    k_max: int,
-    k_gain_tol: float,
-    class_balance: bool,
-) -> Dict[str, Any]:
-    n_total = len(w)
-
-    t_vs = time.time()
-    final_windows: List[Tuple[int, int]] = []
-    chosen_intervals: List[Tuple[int, int]] = []
-    chosen_acc = 0.0
-    dp_time = 0.0
-    if not use_multi_interval:
-        labeled_mask, w, vs_spend = _activeSampling_version_space_reduction(
-            sort_order, texts, label_fn, labeled_mask, w,
-            I=0, J=n_total - 1, B1=B1, B2=vs_budget,
-        )
-        chosen_k = 1
-    else:
-        init_windows: List[Tuple[int, int]] = []
-        step = n_total / float(max(1, vs_k))
-        for m in range(max(1, vs_k)):
-            lo = int(math.floor(m * step))
-            hi = int(math.floor((m + 1) * step)) - 1
-            if m == max(1, vs_k) - 1:
-                hi = n_total - 1
-            if hi >= lo:
-                init_windows.append((lo, hi))
-        labeled_mask, w, vs_spend, final_windows = _activeSampling_multi_interval_vs_reduction(
-            sort_order, texts, label_fn, labeled_mask, w,
-            init_windows, B1=B1, B2=vs_budget, k=max(1, vs_k),
-            class_balance=bool(class_balance),
-        )
-        chosen_k = effective_k
-    vs_time = time.time() - t_vs
-    logger.info(f"  Version space reduction: spent {vs_spend} labels in {vs_time:.2f}s")
-
-    final_pos_weight = 1.0
-    if use_multi_interval:
-        t_dp = time.time()
-        if class_balance:
-            final_pos_weight = _activeSampling_compute_pos_weight(w)
-        if k_auto:
-            _k_upper, chosen_intervals, chosen_acc = _activeSampling_auto_select_k(
-                w, k_max=int(k_max), gain_tol=float(k_gain_tol),
-                pos_weight=final_pos_weight,
-            )
-        else:
-            chosen_intervals, chosen_acc = _activeSampling_kinterval_dp(
-                w, effective_k, pos_weight=final_pos_weight,
-            )
-        chosen_k = len(chosen_intervals)
-        dp_time = time.time() - t_dp
-
-    t_qa = time.time()
-    if use_multi_interval and chosen_intervals:
-        peaks = _activeSampling_kinterval_peaks(chosen_intervals, w)
-    else:
-        effective_n_modes = max(1, int(n_modes))
-        min_separation = max(1, n_total // (effective_n_modes * 10))
-        peaks = _activeSampling_find_top_k_hyps(
-            w, k=effective_n_modes, min_separation=min_separation,
-        )
-    if not peaks:
-        acc_fb = _activeSampling_get_acc(w)
-        if len(acc_fb) > 0:
-            argmax_pos_fb = int(np.argmax(acc_fb))
-            peaks = [(argmax_pos_fb, float(acc_fb[argmax_pos_fb]))]
-        else:
-            peaks = [(0, 0.0)]
-
-    score_floor = 1.0
-    weights = np.array([max(s, 0.0) + score_floor for _, s in peaks], dtype=np.float64)
-    weights = weights / weights.sum()
-    per_peak_budget = [max(2, int(qa_budget * w_)) for w_ in weights]
-
-    overflow = sum(per_peak_budget) - qa_budget
-    if overflow > 0:
-        idx_max = int(np.argmax(per_peak_budget))
-        per_peak_budget[idx_max] = max(2, per_peak_budget[idx_max] - overflow)
-
-    logger.info(
-        f"  QA peaks (k_intervals={effective_k}, chosen_k={chosen_k}, "
-        f"vs_k={vs_k}): "
-        + ", ".join(f"pos={p} score={s:.3f} budget={b}"
-                    for (p, s), b in zip(peaks, per_peak_budget))
-    )
-
-    pending_positions: List[int] = []
-    pending_set: set = set()
-    for (peak_pos, _peak_score), peak_budget in zip(peaks, per_peak_budget):
-        remaining = int(peak_budget)
-        pos = int(peak_pos) - 1  # match side: strictly left of the threshold
-        while remaining > 0 and pos >= 0:
-            if not labeled_mask[pos] and pos not in pending_set:
-                pending_positions.append(pos)
-                pending_set.add(pos)
-                remaining -= 1
-            pos -= 1
-
-    total_qa = int(sum(int(b) for b in per_peak_budget))
-    leftover = total_qa - len(pending_positions)
-    if leftover > 0:
-        t_star = int(peaks[0][0]) if peaks else 0
-        for p in range(t_star, n_total):
-            if leftover <= 0:
-                break
-            if not labeled_mask[p] and p not in pending_set:
-                pending_positions.append(int(p))
-                pending_set.add(int(p))
-                leftover -= 1
-
-    qa_spend = 0
-    if pending_positions:
-        pending_arr = np.asarray(pending_positions, dtype=np.int64)
-        global_indices = sort_order[pending_arr]
-
-        query_texts = [texts[gi] for gi in global_indices]
-        query_labels = np.asarray(label_fn(query_texts), dtype=np.int32)
-        qa_spend = len(pending_positions)
-        labeled_mask[pending_arr] = True
-        w[pending_arr] = np.where(query_labels == 1, 1.0, -1.0)
-
-    qa_time = time.time() - t_qa
-    logger.info(f"  Query around hypothesis: spent {qa_spend} labels in {qa_time:.2f}s")
-
-    if use_multi_interval and qa_spend > 0:
-        t_dp_post = time.time()
-        if class_balance:
-            final_pos_weight = _activeSampling_compute_pos_weight(w)
-        if k_auto:
-            _k_upper, chosen_intervals, chosen_acc = _activeSampling_auto_select_k(
-                w, k_max=int(k_max), gain_tol=float(k_gain_tol),
-                pos_weight=final_pos_weight,
-            )
-        else:
-            chosen_intervals, chosen_acc = _activeSampling_kinterval_dp(
-                w, effective_k, pos_weight=final_pos_weight,
-            )
-        chosen_k = len(chosen_intervals)
-        dp_time += time.time() - t_dp_post
-
-    return {
-        "labeled_mask": labeled_mask,
-        "w": w,
-        "vs_spend": int(vs_spend),
-        "qa_spend": int(qa_spend),
-        "vs_time": float(vs_time),
-        "qa_time": float(qa_time),
-        "dp_time": float(dp_time),
-        "peaks": peaks,
-        "per_peak_budget": per_peak_budget,
-        "chosen_intervals": chosen_intervals,
-        "chosen_acc": float(chosen_acc),
-        "final_windows": final_windows,
-        "final_pos_weight": float(final_pos_weight),
-        "chosen_k": int(chosen_k),
-    }
-
-
-def sample_activeSampling(
-    embeddings: np.ndarray,
-    similarities: np.ndarray,
-    texts: List[Union[str, list]],
-    label_fn: LabelFnType,
-    sample_size: int,
-    knn_k: int = 0,
-    B1: int = 5,
-    vs_ratio: float = 0.5,
-    n_modes: int = 1,
-    k_intervals: Optional[int] = None,
-    k_auto: bool = False,
-    k_max: int = 4,
-    k_gain_tol: float = 0.02,
-    class_balance: bool = False,
-    n_phases: int = 1,
-    lr_blend_schedule: str = "linear",
-    cold_start_phases: int = 1,
-    lr_explore_frac: float = 0.0,
-    phase_budget_split: str = "equal",
-    lr_C: float = 1.0,
-) -> Tuple[np.ndarray, np.ndarray, Optional[csr_matrix], Dict[str, Any]]:
-    n_total = len(similarities)
-    if knn_k <= 0:
-        knn_k = auto_knn_k(n_total)
-
-    use_multi_interval = (
-        k_intervals is not None or bool(k_auto) or int(n_modes) > 1
-    )
-    if k_intervals is None:
-        effective_k = max(1, int(n_modes))
-    else:
-        effective_k = max(1, int(k_intervals))
-    vs_k = max(effective_k, int(k_max)) if k_auto else effective_k
-
-    effective_n_phases = max(1, int(n_phases))
-    if use_multi_interval and effective_n_phases > 1:
-        logger.warning(
-            f"active-learning sampling: n_phases={effective_n_phases} requested but "
-            f"multi-interval path is active (k_intervals/k_auto/n_modes>1); "
-            f"falling back to n_phases=1 (multi-interval × dynamic-axis "
-            f"is out of scope for v1)"
-        )
-        effective_n_phases = 1
-
-    logger.info(
-        f"active-learning sampling: N={n_total}, budget={sample_size}, "
-        f"knn_k={knn_k}, B1={B1}, vs_ratio={vs_ratio}, "
-        f"k_intervals={effective_k}, k_auto={k_auto}, k_max={k_max}, "
-        f"multi_interval_path={use_multi_interval}, "
-        f"class_balance={class_balance}, n_phases={effective_n_phases}, "
-        f"lr_blend_schedule={lr_blend_schedule}, "
-        f"cold_start_phases={cold_start_phases}, "
-        f"lr_explore_frac={lr_explore_frac}, "
-        f"phase_budget_split={phase_budget_split}, lr_C={lr_C}"
-    )
-
-    W: Optional[csr_matrix] = None
-    graph_time = 0.0
-
-    effective_B1 = max(1, B1)
-    B2_total = max(1, int(sample_size * vs_ratio))
-    if B2_total > 0:
-        HTTP_CHUNK = 32
-        target_rounds = 3
-        per_round = max(HTTP_CHUNK, B2_total // target_rounds)
-        auto_min = min(per_round, max(1, B2_total // 2))
-        if effective_B1 < auto_min:
-            effective_B1 = auto_min
-    if effective_B1 != B1:
-        logger.info(
-            f"  Scaling B1 from {B1} to {effective_B1} to fill LLM HTTP batches"
-        )
-
-    phase_budgets = _activeSampling_split_budget(
-        int(sample_size), effective_n_phases, phase_budget_split,
-    )
-    logger.info(f"  Phase budgets: {phase_budgets}")
-
-    labeled_global: Dict[int, int] = {}
-    rng = np.random.default_rng()
-
-    last_peaks: List[Tuple[int, float]] = []
-    last_per_peak_budget: List[int] = []
-    last_chosen_intervals: List[Tuple[int, int]] = []
-    last_chosen_acc = 0.0
-    last_final_windows: List[Tuple[int, int]] = []
-    last_final_pos_weight = 1.0
-    last_chosen_k = 1
-    last_sort_order: np.ndarray = np.argsort(-similarities)
-    # Final blended ordering axis σ (paper Eq. a_i^(t)); exported so the router
-    # can compute π_i as a rank on this axis rather than on raw similarity.
-    last_axis: np.ndarray = similarities.astype(np.float64)
-
-    phase_axis_source: List[str] = []
-    phase_vs_spend: List[int] = []
-    phase_qa_spend: List[int] = []
-    phase_explore_spend: List[int] = []
-    phase_lambda: List[float] = []
-    phase_n_labeled_after: List[int] = []
-    axis_lr_corr: List[float] = []
-    total_vs_time = 0.0
-    total_qa_time = 0.0
-    total_dp_time = 0.0
-    total_lr_refit_time = 0.0
-    n_lr_refits = 0
-
-    lr_model: Optional[LogisticRegression] = None
-
-    def _refit_lr() -> Tuple[Optional[LogisticRegression], float]:
-        if len(labeled_global) < _ACTIVESAMPLING_MIN_LR_FIT:
-            return None, 0.0
-        keys = np.fromiter(labeled_global.keys(), dtype=np.int64)
-        vals = np.fromiter(
-            (labeled_global[int(k)] for k in keys.tolist()), dtype=np.int32,
-        )
-        if len(np.unique(vals)) < 2:
-            return None, 0.0
-        t_lr = time.time()
-        try:
-            model = LogisticRegression(C=float(lr_C), max_iter=200)
-            model.fit(embeddings[keys], vals)
-        except Exception as exc:
-            logger.warning(f"  LR refit failed: {exc}; keeping previous LR")
-            return None, time.time() - t_lr
-        return model, time.time() - t_lr
-
-    for phase_idx in range(effective_n_phases):
-        phase_total_budget = int(phase_budgets[phase_idx])
-        if phase_total_budget <= 0:
-            phase_axis_source.append("skipped")
-            phase_vs_spend.append(0)
-            phase_qa_spend.append(0)
-            phase_explore_spend.append(0)
-            phase_lambda.append(0.0)
-            phase_n_labeled_after.append(len(labeled_global))
-            axis_lr_corr.append(float("nan"))
-            continue
-
-        explore_n = int(phase_total_budget * float(lr_explore_frac))
-        explore_n = max(0, min(explore_n, phase_total_budget))
-        vs_qa_budget = phase_total_budget - explore_n
-        phase_vs_budget = max(1, int(vs_qa_budget * vs_ratio)) if vs_qa_budget > 0 else 0
-        phase_qa_budget = max(0, vs_qa_budget - phase_vs_budget)
-
-        lam = _activeSampling_blend_lambda(
-            phase_idx, effective_n_phases, lr_blend_schedule,
-            len(labeled_global), int(cold_start_phases),
-        )
-        if lr_model is not None and lam > 0.0:
-            lr_score = lr_model.decision_function(embeddings)
-            axis = _activeSampling_compute_phase_axis(similarities, lr_score, lam)
-            corr_mat = np.corrcoef(similarities.astype(np.float64), lr_score.astype(np.float64))
-            corr = float(corr_mat[0, 1]) if corr_mat.shape == (2, 2) else float("nan")
-            axis_source = f"blend(lam={lam:.3f})"
-        else:
-            axis = similarities.astype(np.float64)
-            corr = float("nan")
-            axis_source = "siglip"
-
-        last_axis = axis
-        sort_order_p = np.argsort(-axis)
-        pos_of_global = _activeSampling_inverse_permutation(sort_order_p)
-
-        w_p = np.zeros(n_total, dtype=np.float64)
-        labeled_mask_p = np.zeros(n_total, dtype=bool)
-        if labeled_global:
-            keys_arr = np.fromiter(labeled_global.keys(), dtype=np.int64)
-            vals_arr = np.fromiter(
-                (labeled_global[int(k)] for k in keys_arr.tolist()),
-                dtype=np.int32,
-            )
-            positions = pos_of_global[keys_arr]
-            labeled_mask_p[positions] = True
-            w_p[positions] = np.where(vals_arr == 1, 1.0, -1.0)
-
-        phase_B1 = max(1, min(effective_B1, max(1, phase_vs_budget)))
-
-        result = _run_activeSampling_single_phase(
-            sort_order_p, texts, label_fn, labeled_mask_p, w_p,
-            B1=phase_B1, vs_budget=phase_vs_budget, qa_budget=phase_qa_budget,
-            use_multi_interval=use_multi_interval, vs_k=vs_k,
-            effective_k=effective_k, n_modes=n_modes,
-            k_auto=k_auto, k_max=k_max, k_gain_tol=k_gain_tol,
-            class_balance=class_balance,
-        )
-
-        labeled_mask_p = result["labeled_mask"]
-        w_p = result["w"]
-        new_positions = np.where(labeled_mask_p)[0]
-        for pos in new_positions.tolist():
-            g = int(sort_order_p[int(pos)])
-            labeled_global[g] = int(1 if w_p[int(pos)] == 1.0 else 0)
-
-        explore_spend = 0
-        if explore_n > 0:
-            unlabeled = np.array(
-                [g for g in range(n_total) if g not in labeled_global],
-                dtype=np.int64,
-            )
-            if len(unlabeled) > 0:
-                pick_n = min(explore_n, len(unlabeled))
-                picks = rng.choice(unlabeled, size=pick_n, replace=False)
-                pick_texts = [texts[int(g)] for g in picks.tolist()]
-                pick_labels = np.asarray(label_fn(pick_texts), dtype=np.int32)
-                for g, lab in zip(picks.tolist(), pick_labels.tolist()):
-                    labeled_global[int(g)] = int(lab)
-                explore_spend = pick_n
-
-        last_peaks = result["peaks"]
-        last_per_peak_budget = result["per_peak_budget"]
-        last_chosen_intervals = result["chosen_intervals"]
-        last_chosen_acc = result["chosen_acc"]
-        last_final_windows = result["final_windows"]
-        last_final_pos_weight = result["final_pos_weight"]
-        last_chosen_k = result["chosen_k"]
-        last_sort_order = sort_order_p
-
-        total_vs_time += result["vs_time"]
-        total_qa_time += result["qa_time"]
-        total_dp_time += result["dp_time"]
-        phase_axis_source.append(axis_source)
-        phase_vs_spend.append(int(result["vs_spend"]))
-        phase_qa_spend.append(int(result["qa_spend"]))
-        phase_explore_spend.append(int(explore_spend))
-        phase_lambda.append(float(lam))
-        phase_n_labeled_after.append(len(labeled_global))
-        axis_lr_corr.append(corr)
-
-        if phase_idx < effective_n_phases - 1:
-            new_lr, refit_dt = _refit_lr()
-            total_lr_refit_time += refit_dt
-            if new_lr is not None:
-                lr_model = new_lr
-                n_lr_refits += 1
-
-        logger.info(
-            f"  phase {phase_idx}: axis={axis_source} "
-            f"vs={result['vs_spend']} qa={result['qa_spend']} "
-            f"explore={explore_spend} |labeled|={len(labeled_global)} "
-            f"corr(sim,lr)={corr:.3f}"
-        )
-
-    if labeled_global:
-        pos_of_last = _activeSampling_inverse_permutation(last_sort_order)
-        keys_arr = np.fromiter(labeled_global.keys(), dtype=np.int64)
-        positions_in_last = pos_of_last[keys_arr]
-        order = np.argsort(positions_in_last, kind="stable")
-        keys_final = keys_arr[order]
-        vals_final = np.array(
-            [labeled_global[int(k)] for k in keys_final.tolist()],
-            dtype=np.int32,
-        )
-    else:
-        keys_final = np.zeros(0, dtype=np.int64)
-        vals_final = np.zeros(0, dtype=np.int32)
-    labeled_indices = keys_final
-    labeled_values = vals_final
-
-    n_pos = int(np.sum(labeled_values == 1))
-    logger.info(
-        f"  active-learning sampling total: {len(labeled_indices)} labeled, {n_pos} positive "
-        f"({100.0 * n_pos / max(len(labeled_indices), 1):.1f}%)"
-    )
-
-    profiling: Dict[str, Any] = {
-        "graph_time": graph_time,
-        "sample_size": sample_size,
-        "n_sampled": len(labeled_indices),
-        "n_pos": n_pos,
-        "vs_time": float(total_vs_time),
-        "vs_spend": int(sum(phase_vs_spend)),
-        "qa_time": float(total_qa_time),
-        "qa_spend": int(sum(phase_qa_spend)),
-        "qa_peak_positions": [int(p) for p, _ in last_peaks],
-        "qa_peak_scores": [float(s) for _, s in last_peaks],
-        "qa_per_peak_budget": list(last_per_peak_budget),
-        "n_modes": int(effective_k),
-        "best_hyp_position": int(last_peaks[0][0]) if last_peaks else 0,
-        "knn_k": knn_k,
-        "observed_selectivity": n_pos / max(len(labeled_indices), 1),
-        "k_intervals": int(effective_k),
-        "vs_k": int(vs_k),
-        "k_auto": bool(k_auto),
-        "chosen_k": int(last_chosen_k),
-        "dp_time": float(total_dp_time),
-        "dp_acc": float(last_chosen_acc),
-        "intervals_sorted_space": [
-            [int(a), int(b)] for (a, b) in last_chosen_intervals
-        ],
-        "vs_final_windows_sorted_space": [
-            [int(a), int(b)] for (a, b) in last_final_windows
-        ],
-        "class_balance": bool(class_balance),
-        "pos_weight": float(last_final_pos_weight),
-        "n_phases": int(effective_n_phases),
-        "phase_axis_source": phase_axis_source,
-        "phase_vs_spend": phase_vs_spend,
-        "phase_qa_spend": phase_qa_spend,
-        "phase_explore_spend": phase_explore_spend,
-        "phase_lambda": phase_lambda,
-        "phase_n_labeled_after": phase_n_labeled_after,
-        "axis_lr_corr": axis_lr_corr,
-        "lr_refit_time": float(total_lr_refit_time),
-        "lr_n_refits": int(n_lr_refits),
-        "lr_blend_schedule": lr_blend_schedule,
-        "cold_start_phases": int(cold_start_phases),
-        "lr_explore_frac": float(lr_explore_frac),
-        "phase_budget_split": phase_budget_split,
-        "phase_budgets": list(phase_budgets),
-        "lr_C": float(lr_C),
-        "last_phase_sort_order_first10": [
-            int(x) for x in last_sort_order[:10].tolist()
-        ],
-        # Full final ordering axis σ (over the sampler's input space). The
-        # caller extracts and removes this before profiling is serialized
-        # (it is one float per candidate, too large for logs/CSV).
-        "_final_axis": np.asarray(last_axis, dtype=np.float64).reshape(-1),
-    }
-
-    return labeled_indices, labeled_values, W, profiling
-
-
 def _diffuse_with_early_exit(
     S: csr_matrix,
     init_values: np.ndarray,
@@ -2723,7 +1621,7 @@ def predict_with_score_refinement(
     num_iter: int = 50,
     num_iter_bias: Optional[int] = None,
     num_iter_prop: Optional[int] = None,
-    tol: float = 1e-4,
+    tol: float = 0.0,
     patience: int = 5,
     imbalance_strategy: str = "balanced",
     lr_C: float = 1.0,
@@ -2818,7 +1716,7 @@ def predict_with_score_refinement(
     # outside [0,1], violating the paper's f^(T2) in [0,1]^N contract.
     t0 = time.time()
     deg = np.array(W.sum(axis=1)).flatten()
-    d_inv = 1.0 / np.maximum(deg, 1e-10)
+    d_inv = np.divide(1., deg, out=np.zeros_like(deg), where=deg > 0)
     D_inv = diags(d_inv, format="csr")
     S = D_inv @ W
     prof["graph_norm_time"] = time.time() - t0
@@ -2836,9 +1734,7 @@ def predict_with_score_refinement(
         alpha=alpha, num_iter=t1, tol=tol, patience=patience,
     )
     # FDiff-scale (Huang et al. 2021, Sec. 2.2): write the corrected prediction
-    # only on unlabeled rows; labeled rows keep their base prediction Z[L].
-    # The labels are subsequently rewritten to Y at the start of the Smooth
-    # step (Eq. (4) of the original paper); see Stage C below.
+    # on unlabelled rows and pin L to its expert labels.
     z_corrected = base_probas.copy().astype(np.float64)
     if len(pinned_idx) > 0:
         unlabeled_mask = np.ones(n, dtype=bool)
@@ -2848,6 +1744,7 @@ def predict_with_score_refinement(
         )
     else:
         z_corrected = np.clip(base_probas + E_final, 0.0, 1.0)
+    z_corrected[pinned_idx] = np.asarray(labeled_values,dtype=float)
     prof["bias_diffusion_time"] = time.time() - t0
     prof["bias_diffusion_iters"] = bias_diffusion_iters
     # When base_threshold is a percentile, also apply it to z_corrected for
@@ -2923,118 +1820,6 @@ def predict_with_score_refinement(
     )
     prof["n_predicted_positive"] = n_pred_pos
     return positive_mask, z_smooth, prof
-
-
-def _compute_oof_z_smooth_and_corrected(
-    embeddings: np.ndarray,
-    W: csr_matrix,
-    labeled_indices: np.ndarray,
-    labeled_values: np.ndarray,
-    *,
-    n_folds: int = 5,
-    confidence_threshold: float = 0.5,
-    diffusion_alpha: float = 0.8,
-    propagation_beta: float = 0.8,
-    refine_num_iter: int = 50,
-    refine_t1: Optional[int] = None,
-    refine_t2: Optional[int] = None,
-    refine_tol: float = 1e-4,
-    refine_patience: int = 5,
-    imbalance_strategy: str = "balanced",
-    lr_C: float = 1.0,
-    base_threshold: Optional[float] = None,
-    random_seed: int = 42,
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
-    """Return OOF (z_smooth, z_corrected) for each labelled row.
-
-    Each labelled row is scored by a Bias Diffusion + Homogeneity Propagation model whose pinned set excludes
-    that row, removing the in-sample pinning bias before learned-deferral
-    training.
-    """
-    idx = np.asarray(labeled_indices, dtype=np.int64).reshape(-1)
-    y = np.asarray(labeled_values, dtype=np.int32).reshape(-1)
-    if idx.shape[0] != y.shape[0]:
-        raise ValueError("labeled_indices and labeled_values length mismatch")
-    m = int(idx.shape[0])
-    if m == 0:
-        raise ValueError("OOF Bias Diffusion + Homogeneity Propagation requires at least one labelled row")
-
-    z_smooth_oof = np.zeros(m, dtype=np.float64)
-    z_corrected_oof = np.zeros(m, dtype=np.float64)
-    n_splits = max(2, min(int(n_folds), m)) if m > 1 else 1
-
-    if n_splits == 1:
-        train_splits = [(np.zeros(0, dtype=np.int64), np.arange(m, dtype=np.int64))]
-    else:
-        counts = np.bincount(y.astype(np.int32), minlength=2)
-        if int(counts.min()) >= 2:
-            k = min(n_splits, int(counts.min()))
-            splitter = StratifiedKFold(
-                n_splits=k, shuffle=True, random_state=int(random_seed)
-            )
-            train_splits = list(splitter.split(idx, y))
-        else:
-            k = min(n_splits, m)
-            splitter = KFold(n_splits=k, shuffle=True, random_state=int(random_seed))
-            train_splits = list(splitter.split(idx))
-
-    fold_sizes: List[int] = []
-    fold_times: List[float] = []
-    fold_wrong_rates: List[float] = []
-    for fold_id, (train_pos, hold_pos) in enumerate(train_splits):
-        hold_pos = np.asarray(hold_pos, dtype=np.int64)
-        train_pos = np.asarray(train_pos, dtype=np.int64)
-        if train_pos.size == 0:
-            train_idx = idx[hold_pos]
-            train_y = y[hold_pos]
-        else:
-            train_idx = idx[train_pos]
-            train_y = y[train_pos]
-        t0 = time.time()
-        _, z_smooth_fold, prof_fold = predict_with_score_refinement(
-            embeddings,
-            W,
-            train_idx,
-            train_y,
-            confidence_threshold=confidence_threshold,
-            alpha=diffusion_alpha,
-            beta=propagation_beta,
-            num_iter=refine_num_iter,
-            num_iter_bias=refine_t1,
-            num_iter_prop=refine_t2,
-            tol=refine_tol,
-            patience=refine_patience,
-            imbalance_strategy=imbalance_strategy,
-            lr_C=lr_C,
-            base_threshold=base_threshold,
-        )
-        z_corrected_fold = np.asarray(
-            prof_fold.get("z_corrected", z_smooth_fold), dtype=np.float64
-        ).reshape(-1)
-        hold_idx = idx[hold_pos]
-        z_smooth_oof[hold_pos] = z_smooth_fold[hold_idx]
-        z_corrected_oof[hold_pos] = z_corrected_fold[hold_idx]
-        wrong = (z_smooth_oof[hold_pos] >= confidence_threshold).astype(np.int32) != y[
-            hold_pos
-        ]
-        fold_sizes.append(int(hold_pos.size))
-        fold_times.append(time.time() - t0)
-        fold_wrong_rates.append(float(np.mean(wrong)) if wrong.size else 0.0)
-        logger.info(
-            f"[learned_deferral] OOF fold {fold_id + 1}/{len(train_splits)}: "
-            f"holdout={hold_pos.size}, wrong_rate={fold_wrong_rates[-1]:.3f}, "
-            f"time={fold_times[-1]:.2f}s"
-        )
-
-    info = {
-        "n_folds": int(len(train_splits)),
-        "fold_sizes": fold_sizes,
-        "fold_times": fold_times,
-        "fold_wrong_rates": fold_wrong_rates,
-        "mean_wrong_rate": float(np.mean(fold_wrong_rates)) if fold_wrong_rates else 0.0,
-        "total_time": float(sum(fold_times)),
-    }
-    return z_smooth_oof, z_corrected_oof, info
 
 
 def auto_kmeans_k(n: int) -> int:
@@ -3298,6 +2083,9 @@ def _run_learned_calibration_stage(
     router_calls = int(result.calib_idx.size + result.verify_idx.size)
     elapsed = time.time() - t0
     profiling.update(result.diagnostics)
+    from experiments.evaluation_export import remember_calibration
+    remember_calibration(result, x_cal if use_refined else lr_logit,
+                         np.asarray(positive_mask,dtype=float), labeled_indices)
     audit_dir = os.environ.get("LASO_LC_AUDIT_DIR", "").strip()
     session = getattr(label_fn, "oracle_session", None)
     if audit_dir and lr_logit is not None and session is not None:
@@ -3350,7 +2138,9 @@ def _whole_query_llm_fallback(texts, label_fn, raw_label_fn, labeled_indices, la
         whole_query_fallback_time=time.time() - t0, vllm_time=float(vllm_time_acc[0]),
         lc_status="whole_query_llm", n_total=int(n_total),
         result_status="llm_executed" if not unresolved.size else "llm_executed_with_failures",
-        discovery_status="positive_found" if positive_mask.any() else "llm_verified_empty",
+        discovery_status="positive_found" if positive_mask.any() else
+                         "no_positive_found" if unresolved.size else "verified_empty",
+        quality_certificate=None,
     )
     if hasattr(raw_label_fn, "ledger"):
         profiling["oracle_budget"] = raw_label_fn.ledger.snapshot()
@@ -3385,22 +2175,9 @@ def cluster_proxy_pipeline(
     refine_num_iter: int = 50,
     refine_t1: Optional[int] = None,
     refine_t2: Optional[int] = None,
-    refine_tol: float = 1e-4,
+    refine_tol: float = 0.0,
     refine_patience: int = 5,
     refine_enabled: bool = True,
-    activeSampling_B1: int = 5,
-    activeSampling_vs_ratio: float = 0.5,
-    activeSampling_n_modes: int = 1,
-    activeSampling_k_intervals: Optional[int] = None,
-    activeSampling_k_auto: bool = False,
-    activeSampling_k_max: int = 4,
-    activeSampling_k_gain_tol: float = 0.02,
-    activeSampling_class_balance: bool = False,
-    activeSampling_n_phases: int = 1,
-    activeSampling_lr_blend_schedule: str = "linear",
-    activeSampling_cold_start_phases: int = 1,
-    activeSampling_lr_explore_frac: float = 0.0,
-    activeSampling_phase_budget_split: str = "equal",
     # uqe_active (UQE Algorithm 2, arXiv:2407.09522 §4.1.2 / §C.2)
     uqe_batch_size: int = 16,
     uqe_exploration_sigma_0: float = 0.0,
@@ -3411,18 +2188,9 @@ def cluster_proxy_pipeline(
     router_max_calls: Optional[int] = None,
     decision_mode: str = "force_label",
     learned_calibration_config: Optional[Any] = None,
-    deferral_features: Optional[Sequence[str]] = None,
     # Router π_i rank axis (paper §3.4): "blended" = rank on the sampler's
     # final blended ordering axis σ (default); "similarity" = force rank on raw
     # cosine similarity regardless of the sampler axis.
-    deferral_rank_axis: str = "blended",
-    deferral_hidden_dims_grid: Optional[Sequence[Sequence[int]]] = None,
-    deferral_alpha_grid: Optional[Sequence[float]] = None,
-    deferral_k_folds: int = 5,
-    deferral_inner_cv_k: int = 3,
-    deferral_dagger_beta: float = 0.00,
-    deferral_min_inner_cv_auc: float = 0.60,
-    deferral_min_probe_auc: float = 0.60,
     lr_C: float = 1.0,
     base_threshold: Optional[float] = None,
     lr_class_weight_override: Optional[str] = None,
@@ -3463,6 +2231,8 @@ def cluster_proxy_pipeline(
                        fixed_ce_config, learned_calibration_config,
                        query_embedding=paper_query_embedding)
 
+    if decision_mode in ('learned_deferral','dasp_topk'):
+        raise ValueError('Retired router; use learned_calibration')
     profiling: Dict[str, Any] = {}
     vllm_time_acc = [0.0]
     n_total = embeddings.shape[0]
@@ -3512,41 +2282,6 @@ def cluster_proxy_pipeline(
         logger.info(f"Pipeline random_seed={int(random_seed)} (global numpy + stdlib random seeded)")
     activeSampling_W: Optional[csr_matrix] = None
     random_W: Optional[csr_matrix] = None
-    # Final blended ordering axis σ from the active-learning sampling sampler, used for the
-    # router's π_i rank feature (paper §3.4). Populated below for the activeSampling
-    # path; stays None (→ similarity-rank fallback) otherwise.
-    activeSampling_final_axis: Optional[np.ndarray] = None
-    learned_deferral_active = (
-        bool(defer_enabled)
-        and str(decision_mode) == "learned_deferral"
-        and sampling_method == "activeSampling"
-    )
-    probe_indices = np.zeros(0, dtype=np.int64)
-    probe_labels = np.zeros(0, dtype=np.int32)
-    activeSampling_exclude_mask = np.zeros(n_total, dtype=bool)
-    activeSampling_sample_size = int(sample_size)
-    if learned_deferral_active and float(deferral_dagger_beta) > 0.0 and n_total > 0:
-        requested_probe = max(
-            8, int(math.ceil(float(deferral_dagger_beta) * max(int(sample_size), 1)))
-        )
-        max_probe = max(0, min(n_total, int(sample_size) - 8))
-        if max_probe > 0:
-            n_probe = min(requested_probe, max_probe)
-            rng_probe = np.random.default_rng(
-                int(random_seed) if random_seed is not None else 42
-            )
-            probe_indices = np.sort(
-                rng_probe.choice(n_total, size=n_probe, replace=False).astype(np.int64)
-            )
-            activeSampling_exclude_mask[probe_indices] = True
-            activeSampling_sample_size = max(1, int(sample_size) - int(n_probe))
-            profiling["deferral_probe_n"] = int(n_probe)
-            profiling["deferral_probe_beta"] = float(deferral_dagger_beta)
-            profiling["deferral_activeSampling_sample_budget"] = int(activeSampling_sample_size)
-        else:
-            profiling["deferral_probe_n"] = 0
-            profiling["deferral_probe_beta"] = float(deferral_dagger_beta)
-
     if sampling_method == "stratified":
         if similarities is None:
             raise ValueError("similarities array is required for sampling_strategy='stratified'")
@@ -3587,88 +2322,22 @@ def cluster_proxy_pipeline(
         cluster_stats = {}
         final_cluster_labels = np.zeros(n_total, dtype=np.int32)
     elif sampling_method == "activeSampling":
-        if similarities is None and activeSampling_backend == "legacy":
-            raise ValueError("similarities array is required for legacy sampling_method='activeSampling'")
-
-        if activeSampling_backend not in ("legacy", "fixed_ce"):
-            raise ValueError("activeSampling_backend must be fixed_ce or legacy")
-        sampler = sample_activeSampling
-        if activeSampling_backend == "fixed_ce":
-            from fixed_ce_sampling import SamplingConfig, sample_fixed_ce_texts
-            if fixed_ce_scores is None or np.asarray(fixed_ce_scores).shape != (n_total,):
-                raise ValueError("fixed_ce backend requires aligned explicit fixed_ce_scores")
-            similarities = np.asarray(fixed_ce_scores, dtype=float)
-            cfg = fixed_ce_config or SamplingConfig(seed=int(random_seed or 0))
-            logger.warning(
-                "fixed_ce sampler replaces legacy B1/vs_ratio/modes/k_auto/class_balance/"
-                "phase/blend/explore controls; use fixed_ce_config for sampler settings"
-            )
-
-            def sampler(_embeddings, scores, row_texts, oracle, size, **legacy_options):
-                return sample_fixed_ce_texts(
-                    scores, row_texts, oracle, size, config=cfg,
-                    original_ids=(list(range(n_total)) if len(row_texts) == n_total else eligible_idx.tolist()))
-
+        if activeSampling_backend != 'fixed_ce':
+            raise ValueError('Only the fixed_ce sampling backend is supported')
+        from fixed_ce_sampling import SamplingConfig, sample_fixed_ce_texts
+        if fixed_ce_scores is None or np.asarray(fixed_ce_scores).shape != (n_total,):
+            raise ValueError('fixed_ce backend requires aligned explicit fixed_ce_scores')
+        similarities = np.asarray(fixed_ce_scores, dtype=float)
+        cfg = fixed_ce_config or SamplingConfig(seed=int(random_seed or 0))
         t0 = time.time()
-        if learned_deferral_active and probe_indices.size > 0:
-            eligible_idx = np.where(~activeSampling_exclude_mask)[0].astype(np.int64)
-            sample_embeddings = embeddings[eligible_idx]
-            sample_similarities = similarities[eligible_idx]
-            sample_texts = [texts[int(i)] for i in eligible_idx.tolist()]
-            local_labeled, labeled_values, activeSampling_W, dir_prof = sampler(
-                sample_embeddings, sample_similarities, sample_texts, label_fn,
-                activeSampling_sample_size, knn_k=knn_k, B1=activeSampling_B1,
-                vs_ratio=activeSampling_vs_ratio, n_modes=activeSampling_n_modes,
-                k_intervals=activeSampling_k_intervals,
-                k_auto=activeSampling_k_auto,
-                k_max=activeSampling_k_max,
-                k_gain_tol=activeSampling_k_gain_tol,
-                class_balance=activeSampling_class_balance,
-                n_phases=activeSampling_n_phases,
-                lr_blend_schedule=activeSampling_lr_blend_schedule,
-                cold_start_phases=activeSampling_cold_start_phases,
-                lr_explore_frac=activeSampling_lr_explore_frac,
-                phase_budget_split=activeSampling_phase_budget_split,
-                lr_C=lr_C,
-            )
-            labeled_indices = eligible_idx[np.asarray(local_labeled, dtype=np.int64)]
-            probe_texts = [texts[int(i)] for i in probe_indices.tolist()]
-            probe_labels = np.asarray(label_fn(probe_texts), dtype=np.int32)
-            dir_prof["deferral_probe_excluded"] = int(probe_indices.size)
-            dir_prof["deferral_probe_labels_pos"] = int((probe_labels == 1).sum())
-            if activeSampling_W is not None and activeSampling_W.shape[0] != n_total:
-                activeSampling_W = None
-        else:
-            labeled_indices, labeled_values, activeSampling_W, dir_prof = sampler(
-                embeddings, similarities, texts, label_fn,
-                sample_size, knn_k=knn_k, B1=activeSampling_B1,
-                vs_ratio=activeSampling_vs_ratio, n_modes=activeSampling_n_modes,
-                k_intervals=activeSampling_k_intervals,
-                k_auto=activeSampling_k_auto,
-                k_max=activeSampling_k_max,
-                k_gain_tol=activeSampling_k_gain_tol,
-                class_balance=activeSampling_class_balance,
-                n_phases=activeSampling_n_phases,
-                lr_blend_schedule=activeSampling_lr_blend_schedule,
-                cold_start_phases=activeSampling_cold_start_phases,
-                lr_explore_frac=activeSampling_lr_explore_frac,
-                phase_budget_split=activeSampling_phase_budget_split,
-                lr_C=lr_C,
-            )
+        labeled_indices, labeled_values, activeSampling_W, dir_prof = sample_fixed_ce_texts(
+            similarities, texts, label_fn, sample_size, config=cfg, original_ids=list(range(n_total)))
         total_time = time.time() - t0
         profiling["stratum_time"] = float(dir_prof.get("graph_time", 0.0))
         profiling["sampling_time"] = max(0.0, total_time - profiling["stratum_time"])
         profiling["n_labeled"] = int(len(labeled_indices))
         n_pos_labeled = int(np.sum(labeled_values == 1))
         profiling["n_pos_labeled"] = n_pos_labeled
-        # Extract the sampler's final ordering axis σ for the router π_i rank
-        # (paper §3.4) before profiling is serialized. Only usable when it
-        # spans all n_total candidates (i.e. the non-probe path); the probe
-        # path samples a subset, so its axis is in subset space and we fall
-        # back to the similarity rank.
-        _final_axis = dir_prof.pop("_final_axis", None)
-        if _final_axis is not None and len(_final_axis) == n_total:
-            activeSampling_final_axis = np.asarray(_final_axis, dtype=np.float64).reshape(-1)
         profiling["activeSampling_profiling"] = dir_prof
         # Paper Alg. 1, lines 12-13: without both classes in L no proxy can be trained, so the whole
         # query goes to the LLM and every later stage (proxy, refinement, calibration, routing) is
@@ -3680,62 +2349,6 @@ def cluster_proxy_pipeline(
         cluster_stats = {}
         final_cluster_labels = np.zeros(n_total, dtype=np.int32)
 
-        # ----------------------------------------------------------------
-        # Router training-set construction. Paper Alg. 4 (§5.2) uses R-fold
-        # cross-fitting: the router always trains on out-of-fold propagated
-        # scores over the full labeled set (the OOF path at the router-fit
-        # site below), so every labeled row both anchors the proxy and yields
-        # a router target learned without its own label.
-        #
-        # The optional 6:4 stratified disjoint split below (reserve a held-out
-        # L_router partition) is the "reserve a fixed subset" strategy §5.2
-        # explicitly argues against; it is gated off by
-        # _ROUTER_USE_HELDOUT_SPLIT (default False) and left in place only so
-        # it can be re-enabled for comparison. When disabled (the default),
-        # labeled_indices/values are NOT overridden, so the proxy and
-        # propagation pin the full labeled set and the router-fit site takes
-        # the R-fold OOF cross-fitting branch.
-        # ----------------------------------------------------------------
-        ld_router_indices = np.zeros(0, dtype=np.int64)
-        ld_router_values = np.zeros(0, dtype=np.int32)
-        ld_full_labeled_indices = labeled_indices.copy()
-        ld_full_labeled_values = labeled_values.copy()
-        ld_split_succeeded = False
-        if learned_deferral_active and _ROUTER_USE_HELDOUT_SPLIT:
-            from learned_deferral import stratified_proxy_router_split
-
-            proxy_mask_ld, router_mask_ld, ld_split_info = (
-                stratified_proxy_router_split(
-                    labeled_values,
-                    router_ratio=0.4,
-                    min_router_pos=2,
-                    random_state=int(random_seed) if random_seed is not None else 42,
-                )
-            )
-            profiling["router_split_info"] = dict(ld_split_info)
-            if ld_split_info.get("feasible"):
-                ld_router_indices = labeled_indices[router_mask_ld]
-                ld_router_values = labeled_values[router_mask_ld]
-                # Override for downstream Bias Diffusion + Homogeneity Propagation: only L_proxy is pinned.
-                labeled_indices = labeled_indices[proxy_mask_ld]
-                labeled_values = labeled_values[proxy_mask_ld]
-                ld_split_succeeded = True
-                logger.info(
-                    f"[router] 6:4 split labeled={ld_split_info['n_total_labeled']} -> "
-                    f"L_proxy(pos={ld_split_info['n_proxy_pos']}, "
-                    f"neg={ld_split_info['n_proxy_neg']}, "
-                    f"total={ld_split_info['n_proxy']}) | "
-                    f"L_router(pos={ld_split_info['n_router_pos']}, "
-                    f"neg={ld_split_info['n_router_neg']}, "
-                    f"total={ld_split_info['n_router']})"
-                )
-            else:
-                logger.warning(
-                    "[router] 6:4 split infeasible (%s); falling back to "
-                    "5-fold OOF over the full labeled set",
-                    ld_split_info.get("fallback_reason"),
-                )
-        profiling["router_split_succeeded"] = ld_split_succeeded
     elif sampling_method == "random":
         t0 = time.time()
         _rnd_seed = int(np.random.randint(0, 2**31 - 1))
@@ -3889,7 +2502,6 @@ def cluster_proxy_pipeline(
             #   4. Auto-accept rows above tau_high, auto-reject below
             #      tau_low. Optionally verify the uncertain band with a
             #      second LLM round.
-            t_defer = time.time()
             n_total_int = int(n_total)
             z_smooth_arr = np.asarray(_final_scores, dtype=np.float64).reshape(-1)
             if z_smooth_arr.shape[0] != n_total_int:
@@ -3898,174 +2510,7 @@ def cluster_proxy_pipeline(
                     f"n_total ({n_total_int})"
                 )
 
-            y_cal = np.asarray(labeled_values, dtype=np.float64)
-            n_pos_cal = int(np.sum(y_cal > 0.5))
-            n_neg_cal = int(np.sum(y_cal <= 0.5))
-            if str(decision_mode) == "learned_deferral":
-                from learned_deferral import fit_deferral_classifier
-
-                z_corrected_full = np.asarray(
-                    refine_prof.get("z_corrected", z_smooth_arr), dtype=np.float64
-                ).reshape(-1)
-                # Paper §3.4 π_i: rank on the sampler's final blended ordering
-                # axis σ = (1-λ_T) z(s) + λ_T z(ℓ_T), not raw similarity. Fall
-                # back to similarity order when the sampler stayed similarity-
-                # only or the axis is unavailable (e.g. probe path).
-                _want_blended = str(deferral_rank_axis).lower() != "similarity"
-                if (
-                    _want_blended
-                    and activeSampling_final_axis is not None
-                    and activeSampling_final_axis.shape[0] == n_total_int
-                ):
-                    sorted_idx = np.argsort(-activeSampling_final_axis)
-                    profiling["deferral_rank_axis"] = "blended_sampler_axis"
-                else:
-                    sorted_idx = (
-                        np.argsort(-similarities) if similarities is not None else None
-                    )
-                    profiling["deferral_rank_axis"] = (
-                        "similarity_forced" if not _want_blended else "similarity"
-                    )
-
-                if ld_split_succeeded and ld_router_indices.shape[0] > 0:
-                    # Paper §3.4: train the router on the held-out L_router
-                    # partition. Because L_router was excluded from proxy
-                    # training and Bias Diffusion + Homogeneity Propagation pinning, its propagated scores z^prop
-                    # are already unbiased — pass them directly as the router's
-                    # training scores (no OOF needed).
-                    router_train_idx = np.asarray(ld_router_indices, dtype=np.int64)
-                    router_train_y = np.asarray(ld_router_values, dtype=np.int32)
-                    z_router_train = z_smooth_arr[router_train_idx]
-                    z_corr_router_train = z_corrected_full[router_train_idx]
-                    profiling["deferral_train_source"] = "held_out_router_6_4"
-                    profiling["deferral_oof_time"] = 0.0
-                    oof_info = dict(profiling.get("router_split_info", {}))
-                    oof_info["train_source"] = "held_out_router_6_4"
-                else:
-                    # Fallback: 5-fold OOF over the full labeled set (the
-                    # disjoint split was infeasible for this query/budget).
-                    t_oof = time.time()
-                    z_smooth_oof, z_corrected_oof, oof_info = (
-                        _compute_oof_z_smooth_and_corrected(
-                            embeddings=lr_input,
-                            W=_prebuilt_W,
-                            labeled_indices=labeled_indices,
-                            labeled_values=labeled_values,
-                            n_folds=int(deferral_k_folds),
-                            confidence_threshold=float(confidence_threshold),
-                            diffusion_alpha=float(diffusion_alpha),
-                            propagation_beta=float(propagation_beta),
-                            refine_num_iter=int(refine_num_iter),
-                            refine_t1=refine_t1,
-                            refine_t2=refine_t2,
-                            refine_tol=float(refine_tol),
-                            refine_patience=int(refine_patience),
-                            imbalance_strategy=_refine_imbalance,
-                            lr_C=float(lr_C),
-                            base_threshold=base_threshold,
-                            random_seed=int(random_seed) if random_seed is not None else 42,
-                        )
-                    )
-                    profiling["deferral_oof_time"] = time.time() - t_oof
-                    router_train_idx = np.asarray(labeled_indices, dtype=np.int64)
-                    router_train_y = np.asarray(labeled_values, dtype=np.int32)
-                    z_router_train = z_smooth_oof
-                    z_corr_router_train = z_corrected_oof
-                    profiling["deferral_train_source"] = "oof_5fold"
-
-                decision = fit_deferral_classifier(
-                    z_smooth_full=z_smooth_arr,
-                    z_corrected_full=z_corrected_full,
-                    similarity_full=similarities,
-                    W_full=_prebuilt_W,
-                    sorted_idx_full=sorted_idx,
-                    z_smooth_oof=z_router_train,
-                    z_corrected_oof=z_corr_router_train,
-                    labeled_indices=router_train_idx,
-                    labeled_values=router_train_y,
-                    threshold_proxy=float(confidence_threshold),
-                    feature_names=deferral_features,
-                    hidden_dims_grid=deferral_hidden_dims_grid,
-                    alpha_grid=deferral_alpha_grid,
-                    inner_cv_k=int(deferral_inner_cv_k),
-                    min_inner_cv_auc=float(deferral_min_inner_cv_auc),
-                    probe_indices=probe_indices if probe_indices.size else None,
-                    probe_labels=probe_labels if probe_labels.size else None,
-                    min_probe_auc=float(deferral_min_probe_auc),
-                    random_state=int(random_seed) if random_seed is not None else 42,
-                    classifier_kind="lr",  # paper §3.4: logistic-regression router
-                )
-
-                defer_mask = decision.defer_mask.copy()
-                proxy_pred = decision.proxy_pred.copy()
-                # Pin the FULL actively-sampled set (L_proxy ∪ L_router) to its
-                # known expert-model labels — both partitions carry ground truth.
-                pin_idx = np.asarray(ld_full_labeled_indices, dtype=np.int64)
-                pin_y = np.asarray(ld_full_labeled_values, dtype=np.float64)[: pin_idx.shape[0]]
-                defer_mask[pin_idx] = False
-                proxy_pred[pin_idx] = pin_y > 0.5
-                if probe_indices.size > 0:
-                    defer_mask[probe_indices] = False
-
-                final_pos = proxy_pred.copy()
-                verify_count = 0
-                verify_pos = 0
-                verify_time = 0.0
-                # Patch R1: bound router escalations; keep the rows most likely wrong.
-                n_defer_before_cap = int(defer_mask.sum())
-                cand_idx = (
-                    cap_router_candidates(np.where(defer_mask)[0], decision.defer_proba, router_max_calls)
-                    if verify_uncertain else np.zeros(0, dtype=np.int64)
-                )
-                if verify_uncertain and cand_idx.size > 0:
-                    verify_texts = [texts[int(i)] for i in cand_idx.tolist()]
-                    t0_verify = time.time()
-                    verify_labels = np.asarray(label_fn(verify_texts), dtype=np.int32)
-                    verify_time = time.time() - t0_verify
-                    for idx_row, lab in zip(cand_idx.tolist(), verify_labels.tolist()):
-                        final_pos[int(idx_row)] = int(lab) == 1
-                    verify_count = int(cand_idx.size)
-                    verify_pos = int((verify_labels == 1).sum())
-
-                defer_total_time = time.time() - t_defer
-                deleg_rate = float(defer_mask.mean()) if defer_mask.size else 0.0
-                logger.info(
-                    f"[learned_deferral] train_wrong={decision.info.get('n_train_wrong')} "
-                    f"train_right={decision.info.get('n_train_right')} "
-                    f"inner_auc={decision.info.get('inner_cv_auc', float('nan'))} "
-                    f"probe_auc={decision.info.get('probe_auc', float('nan'))} "
-                    f"defer={int(defer_mask.sum())}/{n_total_int} "
-                    f"verify={verify_count} mode={decision.info.get('method')}"
-                )
-
-                profiling["defer_enabled"] = True
-                profiling["defer_cold_start"] = False
-                profiling["defer_calibration_source"] = "oof_z_smooth"
-                profiling["defer_n_cal"] = int(len(labeled_indices))
-                profiling["defer_n_pos_cal"] = n_pos_cal
-                profiling["defer_n_neg_cal"] = n_neg_cal
-                profiling["defer_decision_mode"] = "learned_deferral"
-                profiling["defer_tau_low"] = float(confidence_threshold)
-                profiling["defer_tau_high"] = float(confidence_threshold)
-                profiling["defer_delegation_rate"] = deleg_rate
-                profiling["defer_uncertain_count"] = int(defer_mask.sum())
-                profiling["defer_accept_count"] = int((final_pos & ~defer_mask).sum())
-                profiling["defer_reject_count"] = int((~final_pos & ~defer_mask).sum())
-                profiling["defer_verify_uncertain"] = bool(verify_uncertain)
-                profiling["defer_verify_count"] = verify_count
-                profiling["defer_candidates_before_cap"] = n_defer_before_cap
-                profiling["defer_router_cap"] = -1 if router_max_calls is None else int(router_max_calls)
-                profiling["budget_sample_size"] = int(sample_size)
-                profiling["defer_verify_positive"] = verify_pos
-                profiling["defer_verify_time"] = verify_time
-                profiling["defer_total_time"] = float(defer_total_time)
-                profiling["deferral_oof_info"] = oof_info
-                profiling["deferral_probe_n"] = int(probe_indices.size)
-                profiling["deferral_probe_positive"] = int((probe_labels == 1).sum())
-                for key, value in decision.info.items():
-                    profiling[f"deferral_{key}"] = value
-                positive_mask = final_pos
-            elif str(decision_mode) == "learned_calibration" and _bargain_mode() is not None:
+            if str(decision_mode) == "learned_calibration" and _bargain_mode() is not None:
                 # Reviewer control (Fig 10): BARGAIN on the refined score replaces calibration + routing.
                 positive_mask = _run_bargain_on_refined(
                     _final_scores, label_fn, labeled_indices, labeled_values,

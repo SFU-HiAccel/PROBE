@@ -13,7 +13,7 @@ def test_public_seed_defaults_and_calibration_resolution_agree():
         assert inspect.signature(fn).parameters["random_seed"].default == 0
     sample, mode, config, defer = proxy_model._resolve_paper_operator(
         100, 10, None, "activeSampling", "fixed_ce", None, None, False, seed=9)
-    assert (sample, mode, config.seed, defer) == (8, "learned_calibration", 9, True)
+    assert (sample, mode, config.seed, defer) == (6, "learned_calibration", 9, True)
 
 
 @pytest.mark.parametrize("fn", [
@@ -30,8 +30,10 @@ import run  # noqa: E402  (imports pyspark; ~3 s)
 
 
 def test_existing_labels_keep_their_decision_modes():
-    assert run._decision_mode_for_ablation("activeSampling+refine+learned_deferral") == "learned_deferral"
-    assert run._decision_mode_for_ablation("activeSampling+refine+dasp_topk") == "learned_deferral"
+    with pytest.raises(ValueError,match="Retired"):
+        run._decision_mode_for_ablation("activeSampling+refine+learned_deferral")
+    with pytest.raises(ValueError,match="Retired"):
+        run._decision_mode_for_ablation("activeSampling+refine+dasp_topk")
     assert run._decision_mode_for_ablation("activeSampling+refine+trust_proxy") == "none"
     assert run._decision_mode_for_ablation("activeSampling+lr_only") == "none"
 
@@ -54,7 +56,7 @@ def test_config_uses_total_budget_semantics(monkeypatch):
     monkeypatch.setattr(run, "LC_CALIB_FRAC", 0.1)
     monkeypatch.setattr(run, "RANDOM_SEED", 7)
     cfg = run._learned_calibration_config(10000, 5)
-    assert (cfg.total_budget, cfg.sample_budget, cfg.calib_budget, cfg.seed) == (500, 400, 100, 7)
+    assert (cfg.total_budget, cfg.sample_budget, cfg.calib_budget, cfg.seed) == (500, 300, 200, 7)
 
 
 def test_existing_budget_split_is_untouched():
@@ -69,17 +71,17 @@ def test_experiment_runners_pass_the_config(fn_name):
 
 
 def test_default_routing_is_outside_preparation_budget():
-    """B pays for L, A and D; routing has a finite default allowance."""
+    """B pays for L+A; the current paper allocates them 60/40."""
     cfg = run._learned_calibration_config(10000, 10)
-    assert (cfg.total_budget, cfg.sample_budget, cfg.calib_budget) == (1000, 800, 200)
+    assert (cfg.total_budget, cfg.sample_budget, cfg.calib_budget) == (1000, 600, 400)
     assert cfg.route_frac == 0.0 and cfg.route_budget == 0
     assert cfg.route_unlimited is True and cfg.route_budget_mult == 0.0
-    # The quality dial does not override the cap.
+    # Alpha chooses how many additional candidates are routed.
     assert 0.0 < cfg.alpha < 1.0
 
 
 def test_default_routing_can_exceed_preparation_b():
-    """A high quality dial still obeys the run.py budget cap."""
+    """Routing may exceed B while the preparation sample stays within B."""
     import numpy as np
     from learned_calibration import OofFeatures, run_learned_calibration
 
@@ -97,33 +99,3 @@ def test_default_routing_can_exceed_preparation_b():
     assert res.status.startswith("routed")
     assert res.diagnostics["lc_calls_total"] > cfg.total_budget
     assert res.diagnostics["lc_calls_L"] + res.diagnostics["lc_calls_A"] <= cfg.total_budget
-
-
-def test_n_phases_env_override(monkeypatch):
-    """LASO_N_PHASES sets the active-learning round count T."""
-    monkeypatch.setenv("LASO_N_PHASES", "7")
-    run._laso_env_overrides()
-    assert run.ACTIVESAMPLING_N_PHASES == 7
-
-
-def test_lc_phases_reports_the_effective_value():
-    """In calibration mode T is clipped by the sample budget; the clipped value is what runs."""
-    saved = run.ACTIVESAMPLING_N_PHASES
-    try:
-        run.ACTIVESAMPLING_N_PHASES = 9
-        assert run._lc_phases(300) == 9        # budget//3 = 100, no clipping
-        assert run._lc_phases(12) == 4         # budget//3 = 4, clipped below the requested 9
-        assert run._lc_phases(1) == 1          # never below one round
-    finally:
-        run.ACTIVESAMPLING_N_PHASES = saved
-
-
-def test_effective_phases_reads_the_sampler_profile():
-    """The row must report the rounds the sampler ran, which live in its own profile dict."""
-    assert run._effective_phases({"activeSampling_profiling": {"n_phases": 3}}) == 3
-    # no sampler profile (e.g. a non-activeSampling ablation): fall back to the configured value
-    assert run._effective_phases({}) == run.ACTIVESAMPLING_N_PHASES
-
-
-def test_fixed_ce_reports_no_reranking_rounds():
-    assert run._effective_phases({"activeSampling_profiling": {"sampler": "fixed_ce_pilot"}}) == 0
