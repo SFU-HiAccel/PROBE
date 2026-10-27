@@ -8,16 +8,6 @@ cross-encoder ranks candidates and supplies their features. Selectivity-adaptive
 sampling acquires expert labels for a logistic-regression proxy, a nearest-neighbor
 graph refines its scores, and a calibrated cascade selects further expert calls.
 
-For `N` candidates and sampling budget `b%`, preparation uses
-`B = floor(N * b / 100)` labels: `floor(0.6 * B)` for training and the remainder for
-calibration. Routing uses the quality–cost weight `alpha`, default `0.5`, and can
-make additional calls. If the training sample lacks either class, PROBE evaluates
-the remaining candidates with the expert.
-
-The implementation follows the manuscript files recorded in
-[manuscript_snapshot.json](docs/artifact/manuscript_snapshot.json). The
-[algorithm mapping](docs/artifact/algorithm_alignment.md) identifies the corresponding
-code and equations.
 
 ## Installation
 
